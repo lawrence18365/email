@@ -2,12 +2,25 @@ name: Email Outreach Cron
 
 on:
   schedule:
-    # Run every hour at minute 0
+    # Run email sending every hour at minute 0
     - cron: '0 * * * *'
+    # Run notifications every 5 minutes
+    - cron: '*/5 * * * *'
   workflow_dispatch:  # Allow manual trigger
+    inputs:
+      job_type:
+        description: 'Job to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - send
+          - notify
+          - summary
 
 jobs:
-  send-emails:
+  email-cron:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,24 +37,59 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run email jobs
+      - name: Determine job type
+        id: job_type
+        run: |
+          # Check if this is a manual trigger with input
+          if [ "${{ github.event.inputs.job_type }}" != "" ]; then
+            echo "type=${{ github.event.inputs.job_type }}" >> $GITHUB_OUTPUT
+          # Check if this is the hourly cron (minute 0)
+          elif [ "$(date +%M)" == "00" ]; then
+            echo "type=send" >> $GITHUB_OUTPUT
+          else
+            echo "type=notify" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run email sending (hourly)
+        if: steps.job_type.outputs.type == 'send' || steps.job_type.outputs.type == 'all'
         env:
-          # Database (Turso)
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-
-          # App config
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           TIMEZONE: America/Los_Angeles
-
-          # Email settings
           MAX_EMAILS_PER_HOUR: "5"
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"
         run: |
+          cd crm
           python cron_runner.py --all
+
+      - name: Run Telegram notifications (every 5 min)
+        if: steps.job_type.outputs.type == 'notify' || steps.job_type.outputs.type == 'all'
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          cd crm
+          python telegram_notifier.py --all
+
+      - name: Send daily summary (manual only)
+        if: steps.job_type.outputs.type == 'summary'
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          cd crm
+          python telegram_notifier.py --summary
 
       - name: Report status
         if: always()
         run: |
-          echo "Email cron job completed at $(date)"
+          echo "Job completed at $(date)"
+          echo "Job type: ${{ steps.job_type.outputs.type }}"

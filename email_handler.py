@@ -342,31 +342,47 @@ class EmailPersonalizer:
         - {personalizedOpener} or {opener} - AI-generated personalized opener
         - {industry}
         - {title} or {jobTitle}
+
+        Fallback syntax: {variable|fallback} - uses fallback if variable is empty
+        Example: {firstName|there} -> "Katie" if firstName exists, "there" if not
         """
         # Get personalized opener or use fallback
         opener = getattr(lead, 'personalized_opener', None) or ''
         if not opener and lead.company:
             opener = f"I came across {lead.company} and wanted to reach out."
 
-        replacements = {
-            '{firstName}': lead.first_name or '',
-            '{first_name}': lead.first_name or '',
-            '{lastName}': lead.last_name or '',
-            '{last_name}': lead.last_name or '',
-            '{fullName}': lead.full_name or '',
-            '{full_name}': lead.full_name or '',
-            '{email}': lead.email or '',
-            '{company}': lead.company or '',
-            '{website}': lead.website or '',
-            '{personalizedOpener}': opener,
-            '{opener}': opener,
-            '{industry}': getattr(lead, 'industry', '') or '',
-            '{title}': getattr(lead, 'title', '') or '',
-            '{jobTitle}': getattr(lead, 'title', '') or '',
+        # Build values dict for lookups
+        values = {
+            'firstName': lead.first_name or '',
+            'first_name': lead.first_name or '',
+            'lastName': lead.last_name or '',
+            'last_name': lead.last_name or '',
+            'fullName': lead.full_name or '',
+            'full_name': lead.full_name or '',
+            'email': lead.email or '',
+            'company': lead.company or '',
+            'website': lead.website or '',
+            'personalizedOpener': opener,
+            'opener': opener,
+            'industry': getattr(lead, 'industry', '') or '',
+            'title': getattr(lead, 'title', '') or '',
+            'jobTitle': getattr(lead, 'title', '') or '',
         }
 
         result = template
-        for placeholder, value in replacements.items():
-            result = result.replace(placeholder, value)
+
+        # First handle fallback syntax: {variable|fallback}
+        fallback_pattern = re.compile(r'\{(\w+)\|([^}]+)\}')
+        def replace_with_fallback(match):
+            var_name = match.group(1)
+            fallback = match.group(2)
+            value = values.get(var_name, '')
+            return value if value else fallback
+
+        result = fallback_pattern.sub(replace_with_fallback, result)
+
+        # Then handle standard replacements
+        for var_name, value in values.items():
+            result = result.replace('{' + var_name + '}', value)
 
         return result
