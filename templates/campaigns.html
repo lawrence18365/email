@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Campaigns{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Email Campaigns</h1>
+    <a href="{{ url_for('add_campaign') }}" class="btn btn-primary">
+        <i class="bi bi-plus-lg"></i> New Campaign
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if campaign_stats %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Inbox</th>
+                        <th>Status</th>
+                        <th>Emails Sent</th>
+                        <th>Responses</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stat in campaign_stats %}
+                    {% set campaign = stat.campaign %}
+                    <tr>
+                        <td><strong>{{ campaign.name }}</strong></td>
+                        <td>{{ campaign.inbox.email }}</td>
+                        <td>
+                            {% if campaign.status == 'active' %}
+                                <span class="badge bg-success">Active</span>
+                            {% elif campaign.status == 'draft' %}
+                                <span class="badge bg-secondary">Draft</span>
+                            {% elif campaign.status == 'paused' %}
+                                <span class="badge bg-warning">Paused</span>
+                            {% else %}
+                                <span class="badge bg-dark">{{ campaign.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ stat.sent }}</td>
+                        <td>{{ stat.responses }}</td>
+                        <td>{{ campaign.created_at.strftime('%Y-%m-%d') }}</td>
+                        <td>
+                            <a href="{{ url_for('edit_campaign', campaign_id=campaign.id) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            <a href="{{ url_for('add_leads_to_campaign', campaign_id=campaign.id) }}" class="btn btn-sm btn-outline-success">
+                                <i class="bi bi-person-plus"></i>
+                            </a>
+                            <form method="post" action="{{ url_for('delete_campaign', campaign_id=campaign.id) }}" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete this campaign?')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted">No campaigns yet. <a href="{{ url_for('add_campaign') }}">Create your first campaign</a></p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

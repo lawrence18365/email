@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Dashboard</h1>
+</div>
+
+<!-- Stats Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-muted">Total Leads</h6>
+                <h2 class="card-title">{{ total_leads }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-muted">Active Campaigns</h6>
+                <h2 class="card-title">{{ active_campaigns }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-muted">Emails Sent Today</h6>
+                <h2 class="card-title">{{ emails_sent_today }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-muted">Meetings Booked</h6>
+                <h2 class="card-title">{{ meetings_booked }}</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Lead Status Breakdown -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Lead Status Breakdown</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tbody>
+                        {% for status, count in status_counts.items() %}
+                        <tr>
+                            <td>
+                                <span class="badge bg-secondary">{{ status }}</span>
+                            </td>
+                            <td class="text-end">{{ count }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Response Stats</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tbody>
+                        <tr>
+                            <td>Total Responses</td>
+                            <td class="text-end">{{ total_responses }}</td>
+                        </tr>
+                        <tr>
+                            <td>Meetings Booked</td>
+                            <td class="text-end">{{ meetings_booked }}</td>
+                        </tr>
+                        <tr>
+                            <td>Response Rate</td>
+                            <td class="text-end">
+                                {% if total_leads > 0 %}
+                                    {{ "%.1f"|format((total_responses / total_leads * 100)) }}%
+                                {% else %}
+                                    0%
+                                {% endif %}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Responses -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Recent Responses (Last 7 Days)</h5>
+            </div>
+            <div class="card-body">
+                {% if recent_responses %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Lead</th>
+                                <th>Subject</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for response in recent_responses %}
+                            <tr>
+                                <td>{{ response.received_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                <td>
+                                    <strong>{{ response.lead.full_name }}</strong><br>
+                                    <small class="text-muted">{{ response.lead.email }}</small>
+                                </td>
+                                <td>{{ response.subject|truncate(50) }}</td>
+                                <td>
+                                    {% if response.meeting_booked %}
+                                        <span class="badge bg-success">Meeting Booked</span>
+                                    {% elif response.reviewed %}
+                                        <span class="badge bg-secondary">Reviewed</span>
+                                    {% else %}
+                                        <span class="badge bg-warning">New</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted">No responses yet</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

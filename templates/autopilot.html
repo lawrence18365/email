@@ -1,0 +1,505 @@
+{% extends "base.html" %}
+
+{% block title %}Autopilot{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Autopilot Control Center</h1>
+    <div>
+        <button class="btn btn-success btn-lg" onclick="runFullAutopilot()">
+            <i class="bi bi-rocket-takeoff"></i> Run Full Autopilot
+        </button>
+    </div>
+</div>
+
+<!-- Status Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">Autopilot Status</h6>
+                <h3 id="autopilotStatus" class="text-success">
+                    <i class="bi bi-circle-fill"></i> Active
+                </h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">Leads Found Today</h6>
+                <h3>{{ stats.leads_found_today or 0 }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">AI Replies Sent</h6>
+                <h3>{{ stats.replies_sent_today or 0 }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">Meetings Booked</h6>
+                <h3>{{ stats.meetings_booked or 0 }}</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Lead Finder -->
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-search"></i> AI Lead Finder</h5>
+                <span class="badge bg-success">FREE with Jina AI</span>
+            </div>
+            <div class="card-body">
+                <form id="leadFinderForm">
+                    <div class="mb-3">
+                        <label class="form-label">Industry</label>
+                        <input type="text" class="form-control" name="industry"
+                               value="mortgage, real estate, fintech" placeholder="e.g., mortgage, fintech">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Location</label>
+                        <input type="text" class="form-control" name="location"
+                               value="Mexico, Latin America" placeholder="e.g., Mexico, USA">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Keywords (comma-separated)</label>
+                        <input type="text" class="form-control" name="keywords"
+                               value="mortgage broker, lending, loans" placeholder="e.g., mortgage, lending">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Job Titles (comma-separated)</label>
+                        <input type="text" class="form-control" name="job_titles"
+                               value="CEO, Director, Owner, Manager" placeholder="e.g., CEO, Director">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Number of Leads</label>
+                        <input type="number" class="form-control" name="limit" value="20" min="1" max="100">
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" name="auto_add" id="autoAdd" checked>
+                        <label class="form-check-label" for="autoAdd">
+                            Automatically add to database
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-search"></i> Find Leads
+                    </button>
+                </form>
+                <div id="leadFinderResults" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Responder -->
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-robot"></i> AI Email Responder</h5>
+                <span class="badge bg-info">{{ pending_responses }} pending</span>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">
+                    AI automatically reads responses, understands intent, and sends personalized replies.
+                </p>
+
+                <div class="mb-4">
+                    <h6>Response Queue</h6>
+                    <ul class="list-group">
+                        {% for response in recent_responses[:5] %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>{{ response.lead.email }}</strong><br>
+                                <small class="text-muted">{{ response.subject|truncate(40) }}</small>
+                            </div>
+                            <span class="badge bg-{{ 'success' if response.reviewed else 'warning' }}">
+                                {{ 'Replied' if response.reviewed else 'Pending' }}
+                            </span>
+                        </li>
+                        {% else %}
+                        <li class="list-group-item text-muted">No pending responses</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+
+                <button class="btn btn-success w-100 mb-2" onclick="processResponses()">
+                    <i class="bi bi-send"></i> Process & Reply to All
+                </button>
+
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="autoReplyEnabled"
+                           {{ 'checked' if auto_reply_enabled else '' }} onchange="toggleAutoReply()">
+                    <label class="form-check-label" for="autoReplyEnabled">
+                        Enable automatic replies (every 15 min)
+                    </label>
+                </div>
+
+                <div id="responderResults" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Campaign Auto-Assignment -->
+<div class="row">
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-diagram-3"></i> Auto-Assign to Campaigns</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">
+                    Automatically add new leads to your best-performing campaign.
+                </p>
+
+                <div class="mb-3">
+                    <label class="form-label">Target Campaign</label>
+                    <select class="form-select" id="targetCampaign">
+                        <option value="best">Best Performing (Auto-select)</option>
+                        {% for campaign in campaigns %}
+                        <option value="{{ campaign.id }}">{{ campaign.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <button class="btn btn-primary w-100" onclick="assignNewLeads()">
+                    <i class="bi bi-plus-circle"></i> Assign New Leads to Campaign
+                </button>
+
+                <div id="assignResults" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Activity</h5>
+                <button class="btn btn-sm btn-outline-primary" onclick="refreshActivity()">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div class="card-body" style="max-height: 300px; overflow-y: auto;">
+                <div id="activityLog">
+                    {% for activity in recent_activity %}
+                    <div class="d-flex mb-2">
+                        <div class="me-2">
+                            {% if activity.type == 'lead_found' %}
+                            <i class="bi bi-person-plus text-success"></i>
+                            {% elif activity.type == 'email_sent' %}
+                            <i class="bi bi-envelope text-primary"></i>
+                            {% elif activity.type == 'reply_sent' %}
+                            <i class="bi bi-reply text-info"></i>
+                            {% elif activity.type == 'meeting' %}
+                            <i class="bi bi-calendar-check text-warning"></i>
+                            {% endif %}
+                        </div>
+                        <div>
+                            <small class="text-muted">{{ activity.time }}</small><br>
+                            {{ activity.message }}
+                        </div>
+                    </div>
+                    {% else %}
+                    <p class="text-muted">No recent activity</p>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Scheduler Status -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-gear"></i> Automation Schedule</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Task</th>
+                        <th>Frequency</th>
+                        <th>Last Run</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><i class="bi bi-envelope"></i> Send Campaign Emails</td>
+                        <td>Every hour</td>
+                        <td>{{ scheduler_status.send_emails_last or 'Never' }}</td>
+                        <td><span class="badge bg-success">Active</span></td>
+                    </tr>
+                    <tr>
+                        <td><i class="bi bi-inbox"></i> Check for Responses</td>
+                        <td>Every 10 minutes</td>
+                        <td>{{ scheduler_status.check_responses_last or 'Never' }}</td>
+                        <td><span class="badge bg-success">Active</span></td>
+                    </tr>
+                    <tr>
+                        <td><i class="bi bi-robot"></i> AI Auto-Reply</td>
+                        <td>Every 15 minutes</td>
+                        <td>{{ scheduler_status.auto_reply_last or 'Never' }}</td>
+                        <td><span class="badge bg-{{ 'success' if auto_reply_enabled else 'secondary' }}">
+                            {{ 'Active' if auto_reply_enabled else 'Disabled' }}
+                        </span></td>
+                    </tr>
+                    <tr>
+                        <td><i class="bi bi-search"></i> AI Lead Prospecting</td>
+                        <td>9 AM & 3 PM daily</td>
+                        <td>{{ scheduler_status.prospecting_last or 'Never' }}</td>
+                        <td><span class="badge bg-success">Active</span></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Loading Modal -->
+<div class="modal fade" id="loadingModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-body text-center py-5">
+                <div class="spinner-border text-primary mb-3" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <h5 id="loadingMessage">Processing...</h5>
+                <p class="text-muted" id="loadingSubtext">This may take a moment</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Results Modal -->
+<div class="modal fade" id="resultsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="resultsTitle">Results</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="resultsBody">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const loadingModal = new bootstrap.Modal(document.getElementById('loadingModal'));
+const resultsModal = new bootstrap.Modal(document.getElementById('resultsModal'));
+
+function showLoading(message, subtext) {
+    document.getElementById('loadingMessage').textContent = message;
+    document.getElementById('loadingSubtext').textContent = subtext || 'This may take a moment';
+    loadingModal.show();
+}
+
+function hideLoading() {
+    loadingModal.hide();
+}
+
+function showResults(title, html) {
+    document.getElementById('resultsTitle').textContent = title;
+    document.getElementById('resultsBody').innerHTML = html;
+    resultsModal.show();
+}
+
+// Lead Finder Form
+document.getElementById('leadFinderForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+
+    const formData = new FormData(this);
+    const data = {
+        industry: formData.get('industry'),
+        location: formData.get('location'),
+        keywords: formData.get('keywords').split(',').map(k => k.trim()),
+        job_titles: formData.get('job_titles').split(',').map(k => k.trim()),
+        limit: parseInt(formData.get('limit')),
+        auto_add: formData.get('auto_add') === 'on'
+    };
+
+    showLoading('Finding Leads...', 'Searching the web and extracting emails');
+
+    try {
+        const response = await fetch('/api/autopilot/find-leads', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+
+        const result = await response.json();
+        hideLoading();
+
+        if (result.success) {
+            let html = `<div class="alert alert-success">
+                Found ${result.found} leads, added ${result.added} to database
+            </div>`;
+
+            if (result.leads && result.leads.length > 0) {
+                html += '<table class="table"><thead><tr><th>Email</th><th>Company</th></tr></thead><tbody>';
+                result.leads.forEach(lead => {
+                    html += `<tr><td>${lead.email}</td><td>${lead.company || '-'}</td></tr>`;
+                });
+                html += '</tbody></table>';
+            }
+
+            showResults('Lead Finder Results', html);
+        } else {
+            showResults('Error', `<div class="alert alert-danger">${result.message}</div>`);
+        }
+    } catch (error) {
+        hideLoading();
+        showResults('Error', `<div class="alert alert-danger">${error.message}</div>`);
+    }
+});
+
+// Process Responses
+async function processResponses() {
+    showLoading('Processing Responses...', 'AI is reading and replying to emails');
+
+    try {
+        const response = await fetch('/api/autopilot/process-responses', {method: 'POST'});
+        const result = await response.json();
+        hideLoading();
+
+        if (result.success) {
+            showResults('AI Responder Results',
+                `<div class="alert alert-success">
+                    Sent ${result.replies_sent} AI-generated replies
+                </div>`
+            );
+            location.reload();
+        } else {
+            showResults('Error', `<div class="alert alert-danger">${result.message}</div>`);
+        }
+    } catch (error) {
+        hideLoading();
+        showResults('Error', `<div class="alert alert-danger">${error.message}</div>`);
+    }
+}
+
+// Run Full Autopilot
+async function runFullAutopilot() {
+    showLoading('Running Full Autopilot...', 'Finding leads, processing responses, optimizing campaigns');
+
+    try {
+        const response = await fetch('/api/autopilot/full', {method: 'POST'});
+        const result = await response.json();
+        hideLoading();
+
+        if (result.success) {
+            let html = '<div class="alert alert-success">Autopilot cycle completed!</div>';
+
+            const r = result.results;
+            html += '<ul class="list-group">';
+
+            if (r.prospecting) {
+                html += `<li class="list-group-item">
+                    <i class="bi bi-search text-primary"></i>
+                    Found ${r.prospecting.found || 0} leads, added ${r.prospecting.added || 0}
+                </li>`;
+            }
+
+            if (r.campaign_assignment) {
+                html += `<li class="list-group-item">
+                    <i class="bi bi-diagram-3 text-success"></i>
+                    Added ${r.campaign_assignment.leads_added || 0} leads to ${r.campaign_assignment.campaign || 'campaign'}
+                </li>`;
+            }
+
+            if (r.responses_processed) {
+                html += `<li class="list-group-item">
+                    <i class="bi bi-reply text-info"></i>
+                    Sent ${r.responses_processed.replies_sent || 0} AI replies
+                </li>`;
+            }
+
+            if (r.optimization && Array.isArray(r.optimization)) {
+                r.optimization.forEach(opt => {
+                    html += `<li class="list-group-item">
+                        <i class="bi bi-gear text-warning"></i>
+                        ${opt.campaign}: ${opt.action} (${opt.reason})
+                    </li>`;
+                });
+            }
+
+            html += '</ul>';
+
+            showResults('Full Autopilot Results', html);
+            location.reload();
+        } else {
+            showResults('Error', `<div class="alert alert-danger">${result.message}</div>`);
+        }
+    } catch (error) {
+        hideLoading();
+        showResults('Error', `<div class="alert alert-danger">${error.message}</div>`);
+    }
+}
+
+// Assign New Leads
+async function assignNewLeads() {
+    const campaignId = document.getElementById('targetCampaign').value;
+
+    showLoading('Assigning Leads...', 'Adding new leads to campaign');
+
+    try {
+        const response = await fetch('/api/autopilot/assign-leads', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({campaign_id: campaignId})
+        });
+        const result = await response.json();
+        hideLoading();
+
+        if (result.success) {
+            showResults('Assignment Results',
+                `<div class="alert alert-success">
+                    Added ${result.assigned} leads to ${result.campaign_name}
+                </div>`
+            );
+        } else {
+            showResults('Error', `<div class="alert alert-danger">${result.message}</div>`);
+        }
+    } catch (error) {
+        hideLoading();
+        showResults('Error', `<div class="alert alert-danger">${error.message}</div>`);
+    }
+}
+
+// Toggle Auto Reply
+async function toggleAutoReply() {
+    const enabled = document.getElementById('autoReplyEnabled').checked;
+
+    try {
+        await fetch('/api/autopilot/toggle-auto-reply', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: enabled})
+        });
+    } catch (error) {
+        console.error('Error toggling auto-reply:', error);
+    }
+}
+
+// Refresh Activity
+function refreshActivity() {
+    location.reload();
+}
+</script>
+{% endblock %}

@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Campaign{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h1>Edit Campaign: {{ campaign.name }}</h1>
+</div>
+
+<!-- Campaign Settings -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Campaign Settings</h5>
+    </div>
+    <div class="card-body">
+        <form method="post">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Campaign Name</label>
+                        <input type="text" class="form-control" id="name" name="name" value="{{ campaign.name }}" required>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="mb-3">
+                        <label for="status" class="form-label">Status</label>
+                        <select class="form-select" id="status" name="status">
+                            <option value="draft" {% if campaign.status == 'draft' %}selected{% endif %}>Draft</option>
+                            <option value="active" {% if campaign.status == 'active' %}selected{% endif %}>Active</option>
+                            <option value="paused" {% if campaign.status == 'paused' %}selected{% endif %}>Paused</option>
+                            <option value="completed" {% if campaign.status == 'completed' %}selected{% endif %}>Completed</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Sending From</label>
+                <input type="text" class="form-control" value="{{ campaign.inbox.name }} ({{ campaign.inbox.email }})" disabled>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Rotation-lite (optional)</label>
+                <div class="border rounded p-2" style="max-height: 200px; overflow-y: auto;">
+                    {% for inbox in inboxes %}
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="rotation_inbox_ids" id="rotation_inbox_{{ inbox.id }}" value="{{ inbox.id }}"
+                               {% if inbox.id in rotation_inbox_ids %}checked{% endif %}>
+                        <label class="form-check-label" for="rotation_inbox_{{ inbox.id }}">
+                            {{ inbox.name }} ({{ inbox.email }})
+                        </label>
+                    </div>
+                    {% endfor %}
+                </div>
+                <small class="text-muted">Sends will rotate across selected inboxes (primary inbox is always included).</small>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+        </form>
+    </div>
+</div>
+
+<!-- Email Sequences -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Email Sequences</h5>
+    </div>
+    <div class="card-body">
+        {% if sequences %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Step</th>
+                        <th>Delay (Days)</th>
+                        <th>Subject</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sequence in sequences %}
+                    <tr>
+                        <td><strong>Step {{ sequence.step_number }}</strong></td>
+                        <td>{{ sequence.delay_days }}</td>
+                        <td>{{ sequence.subject_template|truncate(60) }}</td>
+                        <td>
+                            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#viewSequence{{ sequence.id }}">
+                                <i class="bi bi-eye"></i> View
+                            </button>
+                            <form method="post" action="{{ url_for('delete_sequence', campaign_id=campaign.id, sequence_id=sequence.id) }}" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete this sequence step?')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+
+                    <!-- View Modal -->
+                    <div class="modal fade" id="viewSequence{{ sequence.id }}" tabindex="-1">
+                        <div class="modal-dialog modal-lg">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title">Step {{ sequence.step_number }}</h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <div class="mb-3">
+                                        <strong>Subject:</strong>
+                                        <p>{{ sequence.subject_template }}</p>
+                                    </div>
+                                    <div class="mb-3">
+                                        <strong>Body:</strong>
+                                        <div class="border p-3" style="white-space: pre-wrap;">{{ sequence.email_template }}</div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <strong>Delay:</strong> {{ sequence.delay_days }} days after previous step
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted">No sequences yet. Add your first email sequence below.</p>
+        {% endif %}
+
+        <!-- Add Sequence Form -->
+        <hr>
+        <h6>Add New Sequence Step</h6>
+        <form method="post" action="{{ url_for('add_sequence', campaign_id=campaign.id) }}">
+            <div class="row">
+                <div class="col-md-2">
+                    <div class="mb-3">
+                        <label for="step_number" class="form-label">Step #</label>
+                        <input type="number" class="form-control" id="step_number" name="step_number" value="{{ sequences|length + 1 }}" required>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="mb-3">
+                        <label for="delay_days" class="form-label">Delay (Days)</label>
+                        <input type="number" class="form-control" id="delay_days" name="delay_days" value="0" required>
+                        <small class="text-muted">0 for immediate</small>
+                    </div>
+                </div>
+                <div class="col-md-8">
+                    <div class="mb-3">
+                        <label for="subject" class="form-label">Subject Line</label>
+                        <input type="text" class="form-control" id="subject" name="subject" required>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label for="body" class="form-label">Email Body (HTML)</label>
+                <textarea class="form-control" id="body" name="body" rows="10" required></textarea>
+                <small class="text-muted">
+                    Available variables: {firstName}, {lastName}, {fullName}, {email}, {company}, {website}
+                </small>
+            </div>
+
+            <button type="submit" class="btn btn-success">Add Sequence Step</button>
+        </form>
+    </div>
+</div>
+
+<a href="{{ url_for('campaigns') }}" class="btn btn-secondary">Back to Campaigns</a>
+{% endblock %}

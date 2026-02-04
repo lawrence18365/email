@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+
+{% block title %}Tracking{% endblock %}
+
+{% block extra_css %}
+<style>
+    .progress-step {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        font-weight: bold;
+        margin-right: 8px;
+    }
+    .progress-step.sent {
+        background-color: #198754;
+        color: white;
+    }
+    .progress-step.pending {
+        background-color: #e9ecef;
+        color: #6c757d;
+        border: 2px dashed #adb5bd;
+    }
+    .progress-step.failed {
+        background-color: #dc3545;
+        color: white;
+    }
+    .lead-card {
+        border-left: 4px solid #0d6efd;
+    }
+    .lead-card.responded {
+        border-left-color: #198754;
+    }
+    .lead-card.stopped {
+        border-left-color: #6c757d;
+    }
+    .inbox-bar {
+        height: 24px;
+        background-color: #e9ecef;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    .inbox-bar-fill {
+        height: 100%;
+        background-color: #0d6efd;
+        transition: width 0.3s ease;
+    }
+    .step-connector {
+        flex-grow: 1;
+        height: 2px;
+        background-color: #dee2e6;
+        margin: 0 4px;
+    }
+    .step-connector.completed {
+        background-color: #198754;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1><i class="bi bi-graph-up"></i> Campaign Tracking</h1>
+    <div>
+        <button class="btn btn-outline-primary" onclick="location.reload()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <a href="{{ url_for('autopilot') }}" class="btn btn-success">
+            <i class="bi bi-robot"></i> Autopilot
+        </a>
+    </div>
+</div>
+
+<!-- Inbox Capacity -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-inbox"></i> Inbox Capacity (Last Hour)</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            {% for stat in inbox_stats %}
+            <div class="col-md-4 mb-2">
+                <div class="d-flex justify-content-between mb-1">
+                    <span>{{ stat.inbox.name }}</span>
+                    <span class="text-muted">{{ stat.sent_last_hour }}/{{ stat.capacity }}</span>
+                </div>
+                <div class="inbox-bar">
+                    <div class="inbox-bar-fill" style="width: {{ (stat.sent_last_hour / stat.capacity * 100) | int }}%"></div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Campaign Tracking -->
+{% for data in tracking_data %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <div>
+            <h5 class="mb-0">
+                {% if data.campaign.status == 'active' %}
+                <span class="badge bg-success me-2">Active</span>
+                {% elif data.campaign.status == 'paused' %}
+                <span class="badge bg-warning me-2">Paused</span>
+                {% else %}
+                <span class="badge bg-secondary me-2">{{ data.campaign.status | title }}</span>
+                {% endif %}
+                {{ data.campaign.name }}
+            </h5>
+        </div>
+        <div class="text-muted">
+            <span class="me-3"><i class="bi bi-people"></i> {{ data.total_leads }} leads</span>
+            <span class="me-3"><i class="bi bi-envelope"></i> {{ data.total_sent }} sent</span>
+            <span><i class="bi bi-reply"></i> {{ data.total_responses }} responses</span>
+        </div>
+    </div>
+    <div class="card-body">
+        <!-- Sequence Timeline -->
+        <div class="mb-4 p-3 bg-light rounded">
+            <h6 class="text-muted mb-3">Email Sequence</h6>
+            <div class="d-flex align-items-center flex-wrap">
+                {% for seq in data.sequences %}
+                <div class="text-center me-2 mb-2">
+                    <div class="progress-step pending">{{ seq.step_number }}</div>
+                    <small class="d-block text-muted">
+                        {% if seq.delay_days == 0 %}Immediately{% else %}+{{ seq.delay_days }}d{% endif %}
+                    </small>
+                </div>
+                {% if not loop.last %}
+                <div class="step-connector mb-3"></div>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Lead Progress -->
+        <h6 class="text-muted mb-3">Lead Progress</h6>
+        {% for lead_data in data.leads %}
+        <div class="card lead-card {{ lead_data.campaign_status }} mb-3">
+            <div class="card-body py-2">
+                <div class="row align-items-center">
+                    <div class="col-md-4">
+                        <strong>{{ lead_data.lead.first_name }} {{ lead_data.lead.last_name }}</strong>
+                        <br>
+                        <small class="text-muted">{{ lead_data.lead.email }}</small>
+                        <br>
+                        <small class="text-muted">{{ lead_data.lead.company }}</small>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="d-flex align-items-center">
+                            {% for step in lead_data.steps %}
+                            <div class="text-center" title="
+                                {%- if step.status == 'sent' -%}
+                                Sent {{ step.sent_at.strftime('%m/%d %H:%M') }} via {{ step.inbox }}
+                                {%- else -%}
+                                Scheduled in {{ step.days_until }} days
+                                {%- endif -%}
+                            ">
+                                <div class="progress-step {{ step.status }} {% if step.email_status == 'failed' %}failed{% endif %}">
+                                    {% if step.status == 'sent' %}
+                                    <i class="bi bi-check"></i>
+                                    {% else %}
+                                    {{ step.step }}
+                                    {% endif %}
+                                </div>
+                                <small class="d-block text-muted" style="font-size: 0.7rem;">
+                                    {% if step.status == 'sent' %}
+                                    {{ step.sent_at.strftime('%m/%d') }}
+                                    {% else %}
+                                    ~{{ step.days_until }}d
+                                    {% endif %}
+                                </small>
+                            </div>
+                            {% if not loop.last %}
+                            <div class="step-connector {% if step.status == 'sent' %}completed{% endif %}" style="max-width: 40px;"></div>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <div class="col-md-2 text-end">
+                        {% if lead_data.campaign_status == 'responded' %}
+                        <span class="badge bg-success"><i class="bi bi-check-circle"></i> Responded</span>
+                        {% elif lead_data.campaign_status == 'stopped' %}
+                        <span class="badge bg-secondary"><i class="bi bi-stop-circle"></i> Stopped</span>
+                        {% elif lead_data.campaign_status == 'completed' %}
+                        <span class="badge bg-info"><i class="bi bi-flag"></i> Completed</span>
+                        {% else %}
+                        <span class="badge bg-primary">{{ lead_data.total_sent }}/{{ lead_data.total_steps }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endfor %}
+
+<!-- Automation Status -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-gear"></i> Automation Status</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-3">
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-check-circle-fill text-success fs-4 me-2"></i>
+                    <div>
+                        <strong>Email Sending</strong>
+                        <small class="d-block text-muted">Every 60 min (9AM-5PM)</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-check-circle-fill text-success fs-4 me-2"></i>
+                    <div>
+                        <strong>Response Check</strong>
+                        <small class="d-block text-muted">Every 10 min</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-check-circle-fill text-success fs-4 me-2"></i>
+                    <div>
+                        <strong>AI Auto-Reply</strong>
+                        <small class="d-block text-muted">Every 15 min</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-check-circle-fill text-success fs-4 me-2"></i>
+                    <div>
+                        <strong>Lead Prospecting</strong>
+                        <small class="d-block text-muted">9AM & 3PM daily</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

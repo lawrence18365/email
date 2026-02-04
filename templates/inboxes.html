@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}Inboxes{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Email Inboxes</h1>
+    <a href="{{ url_for('add_inbox') }}" class="btn btn-primary">
+        <i class="bi bi-plus-lg"></i> Add Inbox
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if inboxes %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>SMTP</th>
+                        <th>IMAP</th>
+                        <th>Rate Limit</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for inbox in inboxes %}
+                    <tr>
+                        <td><strong>{{ inbox.name }}</strong></td>
+                        <td>{{ inbox.email }}</td>
+                        <td>{{ inbox.smtp_host }}:{{ inbox.smtp_port }}</td>
+                        <td>{{ inbox.imap_host }}:{{ inbox.imap_port }}</td>
+                        <td>{{ inbox.max_per_hour }}/hour</td>
+                        <td>
+                            {% if inbox.active %}
+                                <span class="badge bg-success">Active</span>
+                            {% else %}
+                                <span class="badge bg-secondary">Inactive</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-info" onclick="testInbox({{ inbox.id }})">
+                                <i class="bi bi-plug"></i> Test
+                            </button>
+                            <a href="{{ url_for('edit_inbox', inbox_id=inbox.id) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            <form method="post" action="{{ url_for('delete_inbox', inbox_id=inbox.id) }}" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete this inbox?')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted">No inboxes configured. <a href="{{ url_for('add_inbox') }}">Add your first inbox</a></p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Test Results Modal -->
+<div class="modal fade" id="testModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Connection Test Results</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="testResults">
+                <p>Testing...</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function testInbox(inboxId) {
+    const modal = new bootstrap.Modal(document.getElementById('testModal'));
+    const results = document.getElementById('testResults');
+    results.innerHTML = '<p>Testing connection...</p>';
+    modal.show();
+
+    try {
+        const response = await fetch(`/inboxes/${inboxId}/test`);
+        const data = await response.json();
+
+        let html = '<div class="mb-3">';
+        html += '<strong>SMTP:</strong> ';
+        if (data.smtp.success) {
+            html += '<span class="badge bg-success">Connected</span>';
+        } else {
+            html += '<span class="badge bg-danger">Failed</span>';
+            html += `<p class="text-danger small mt-1">${data.smtp.message}</p>`;
+        }
+        html += '</div>';
+
+        html += '<div>';
+        html += '<strong>IMAP:</strong> ';
+        if (data.imap.success) {
+            html += '<span class="badge bg-success">Connected</span>';
+        } else {
+            html += '<span class="badge bg-danger">Failed</span>';
+            html += `<p class="text-danger small mt-1">${data.imap.message}</p>`;
+        }
+        html += '</div>';
+
+        results.innerHTML = html;
+    } catch (error) {
+        results.innerHTML = '<p class="text-danger">Error testing connection</p>';
+    }
+}
+</script>
+{% endblock %}

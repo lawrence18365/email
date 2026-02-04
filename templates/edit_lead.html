@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Lead{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h1>Edit Lead</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <form method="post">
+                    <div class="mb-3">
+                        <label class="form-label">Email</label>
+                        <input type="text" class="form-control" value="{{ lead.email }}" disabled>
+                        <small class="text-muted">Email cannot be changed</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="first_name" class="form-label">First Name</label>
+                        <input type="text" class="form-control" id="first_name" name="first_name" value="{{ lead.first_name or '' }}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="last_name" class="form-label">Last Name</label>
+                        <input type="text" class="form-control" id="last_name" name="last_name" value="{{ lead.last_name or '' }}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="company" class="form-label">Company</label>
+                        <input type="text" class="form-control" id="company" name="company" value="{{ lead.company or '' }}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="website" class="form-label">Website</label>
+                        <input type="url" class="form-control" id="website" name="website" value="{{ lead.website or '' }}">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="status" class="form-label">Status</label>
+                        <select class="form-select" id="status" name="status">
+                            <option value="new" {% if lead.status == 'new' %}selected{% endif %}>New</option>
+                            <option value="contacted" {% if lead.status == 'contacted' %}selected{% endif %}>Contacted</option>
+                            <option value="responded" {% if lead.status == 'responded' %}selected{% endif %}>Responded</option>
+                            <option value="meeting_booked" {% if lead.status == 'meeting_booked' %}selected{% endif %}>Meeting Booked</option>
+                            <option value="not_interested" {% if lead.status == 'not_interested' %}selected{% endif %}>Not Interested</option>
+                        </select>
+                    </div>
+
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary">Save Changes</button>
+                        <a href="{{ url_for('leads') }}" class="btn btn-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

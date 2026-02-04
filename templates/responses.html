@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}Responses{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h1>Email Responses</h1>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if responses %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Lead</th>
+                        <th>Subject</th>
+                        <th>Assigned</th>
+                        <th>Label</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for response in responses %}
+                    <tr>
+                        <td>{{ response.received_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td>
+                            <strong>{{ response.lead.full_name }}</strong><br>
+                            <small class="text-muted">{{ response.lead.email }}</small><br>
+                            {% if response.lead.company %}
+                            <small class="text-muted">{{ response.lead.company }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <button type="button" class="btn btn-link p-0 text-start" data-bs-toggle="modal" data-bs-target="#viewResponse{{ response.id }}">
+                                {{ response.subject|truncate(60) }}
+                            </button>
+                        </td>
+                        <td>{{ response.assigned_to or '—' }}</td>
+                        <td>{{ response.label or '—' }}</td>
+                        <td>
+                            {% if response.meeting_booked %}
+                                <span class="badge bg-success">Meeting Booked</span>
+                            {% elif response.lead.status == 'not_interested' %}
+                                <span class="badge bg-danger">Not Interested</span>
+                            {% elif response.reviewed %}
+                                <span class="badge bg-secondary">Reviewed</span>
+                            {% else %}
+                                <span class="badge bg-warning">New</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if not response.meeting_booked and response.lead.status != 'not_interested' %}
+                            <form method="post" action="{{ url_for('mark_meeting_booked', response_id=response.id) }}" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-success">
+                                    <i class="bi bi-calendar-check"></i> Meeting
+                                </button>
+                            </form>
+                            <form method="post" action="{{ url_for('mark_not_interested', response_id=response.id) }}" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-x-circle"></i> Not Interested
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+
+                    <!-- View Response Modal -->
+                    <div class="modal fade" id="viewResponse{{ response.id }}" tabindex="-1">
+                        <div class="modal-dialog modal-lg">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title">{{ response.subject }}</h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <div class="mb-3">
+                                        <strong>From:</strong> {{ response.lead.full_name }} ({{ response.lead.email }})
+                                    </div>
+                                    <div class="mb-3">
+                                        <strong>Date:</strong> {{ response.received_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                                    </div>
+                                    <div class="mb-3">
+                                        <strong>Message:</strong>
+                                        <div class="border p-3 mt-2" style="white-space: pre-wrap; max-height: 400px; overflow-y: auto;">{{ response.body }}</div>
+                                    </div>
+                                    <hr>
+                                    <form method="post" action="{{ url_for('update_response', response_id=response.id) }}">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <label class="form-label">Assigned To</label>
+                                                    <input type="text" class="form-control" name="assigned_to" value="{{ response.assigned_to or '' }}" placeholder="e.g. Alex">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <label class="form-label">Label</label>
+                                                    <input type="text" class="form-control" name="label" value="{{ response.label or '' }}" placeholder="e.g. pricing, unsubscribe">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Notes</label>
+                                            <textarea class="form-control" name="notes" rows="3">{{ response.notes or '' }}</textarea>
+                                        </div>
+                                        <div class="form-check mb-3">
+                                            <input class="form-check-input" type="checkbox" id="reviewed{{ response.id }}" name="reviewed" {% if response.reviewed %}checked{% endif %}>
+                                            <label class="form-check-label" for="reviewed{{ response.id }}">Mark as reviewed</label>
+                                        </div>
+                                        <button type="submit" class="btn btn-primary">Save Notes</button>
+                                    </form>
+                                </div>
+                                <div class="modal-footer">
+                                    {% if not response.meeting_booked and response.lead.status != 'not_interested' %}
+                                    <form method="post" action="{{ url_for('mark_meeting_booked', response_id=response.id) }}">
+                                        <button type="submit" class="btn btn-success">Mark as Meeting Booked</button>
+                                    </form>
+                                    <form method="post" action="{{ url_for('mark_not_interested', response_id=response.id) }}">
+                                        <button type="submit" class="btn btn-danger">Mark as Not Interested</button>
+                                    </form>
+                                    {% endif %}
+                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted">No responses yet. Responses will appear here when leads reply to your campaigns.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

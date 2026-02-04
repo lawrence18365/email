@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}Deliverability{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Deliverability Guardrails</h1>
+    <div class="d-flex gap-2">
+        <form method="post" action="{{ url_for('pause_all_campaigns') }}">
+            <button type="submit" class="btn btn-danger">
+                <i class="bi bi-pause-circle"></i> Pause All Campaigns
+            </button>
+        </form>
+        <form method="post" action="{{ url_for('resume_all_campaigns') }}">
+            <button type="submit" class="btn btn-outline-success">
+                <i class="bi bi-play-circle"></i> Resume All
+            </button>
+        </form>
+    </div>
+</div>
+
+{% if spike %}
+<div class="alert alert-danger">
+    <strong>Spike detected:</strong>
+    {{ recent_bounced }} bounces and {{ recent_failed }} failures out of {{ recent_sent }} sends
+    in the last {{ spike_window_minutes }} minutes.
+    Thresholds: {{ spike_bounce_rate }}% bounce, {{ spike_failure_rate }}% failure.
+</div>
+{% else %}
+<div class="alert alert-success">
+    <strong>No spike detected:</strong>
+    {{ "%.1f"|format(recent_bounce_rate) }}% bounce, {{ "%.1f"|format(recent_failure_rate) }}% failure
+    in the last {{ spike_window_minutes }} minutes.
+</div>
+{% endif %}
+
+<div class="row mb-4">
+    <div class="col-md-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-muted">Sent (Last 7 Days)</h6>
+                <h2 class="card-title">{{ total_sent }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-muted">Bounces (Last 7 Days)</h6>
+                <h2 class="card-title">{{ total_bounced }}</h2>
+                <div class="text-muted small">{{ "%.1f"|format(bounce_rate) }}% bounce rate</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-muted">Failed Sends (Last 7 Days)</h6>
+                <h2 class="card-title">{{ total_failed }}</h2>
+                <div class="text-muted small">{{ "%.1f"|format(failure_rate) }}% failure rate</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Inbox Health (Last 7 Days)</h5>
+    </div>
+    <div class="card-body">
+        {% if inbox_rows %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Inbox</th>
+                        <th>Status</th>
+                        <th>Sending Window</th>
+                        <th>Sent (7d)</th>
+                        <th>Bounced (7d)</th>
+                        <th>Failed (7d)</th>
+                        <th>Last Hour</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in inbox_rows %}
+                    <tr>
+                        <td>
+                            <strong>{{ row.inbox.name }}</strong><br>
+                            <small class="text-muted">{{ row.inbox.email }}</small>
+                        </td>
+                        <td>
+                            {% if row.inbox.active %}
+                                <span class="badge bg-success">Active</span>
+                            {% else %}
+                                <span class="badge bg-secondary">Inactive</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ row.sending_start }}:00 - {{ row.sending_end }}:00</td>
+                        <td>{{ row.sent_last_week }}</td>
+                        <td>
+                            {% if row.bounced_last_week > 0 %}
+                                <span class="badge bg-danger">{{ row.bounced_last_week }}</span>
+                            {% else %}
+                                0
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if row.failed_last_week > 0 %}
+                                <span class="badge bg-warning text-dark">{{ row.failed_last_week }}</span>
+                            {% else %}
+                                0
+                            {% endif %}
+                        </td>
+                        <td>{{ row.last_hour }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted">No inboxes configured yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
