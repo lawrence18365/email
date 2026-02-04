@@ -26,7 +26,7 @@ INBOX_CONFIG = {
     "imap_use_ssl": True,
     "username": "hello@weddingcounselors.com",
     "password": EMAIL_PASSWORD,
-    "max_per_hour": 5,  # Conservative start - 10-15/day spread across hours
+    "max_per_hour": 2,  # Targets ~16/day across a standard 9-17 window
     "active": True
 }
 
@@ -35,16 +35,14 @@ EMAIL_SEQUENCES = [
     {
         "step_number": 1,
         "delay_days": 0,  # Send immediately when added to campaign
-        "subject_template": "Free listing for {company} on Wedding Counselors Directory",
+        "subject_template": "About {company} on Wedding Counselors Directory",
         "email_template": """Hi {firstName},
 
-I came across {company} and wanted to reach out personally.
+I lead partnerships at Wedding Counselors Directory. We are building a trusted directory for premarital counselors and clergy.
 
-We just launched Wedding Counselors Directory - a new platform specifically for clergy, pastors, and premarital counseling professionals to connect with engaged couples looking for guidance.
+We would like to include {company} with a complimentary founding listing (profile, services, and contact info). Setup takes about 2 minutes.
 
-I'd love to offer you a free listing. It takes 2 minutes to set up and helps couples in your area find your services.
-
-Would you be interested? Just reply "yes" and I'll send you the signup link.
+Open to it? Reply "yes" and I will send the link.
 
 Best,
 Wedding Counselors Directory Team
@@ -53,19 +51,12 @@ https://weddingcounselors.com"""
     {
         "step_number": 2,
         "delay_days": 3,  # 3 days after first email
-        "subject_template": "Quick follow-up - free directory listing",
+        "subject_template": "Quick follow-up on your directory listing",
         "email_template": """Hi {firstName},
 
-Just following up on my previous email about a free listing on Wedding Counselors Directory.
+Quick follow-up on the Wedding Counselors Directory listing for {company}. Couples in your area are actively searching for premarital counseling, and we want them to find you.
 
-Many couples search online when looking for premarital counseling - we want to make sure they can find you.
-
-Your free listing includes:
-- Your profile and services
-- Contact information
-- Reviews from couples you've helped
-
-Reply "interested" and I'll send the quick signup form.
+If you want the complimentary founding listing, just reply "yes" and I will send the setup link.
 
 Best,
 Wedding Counselors Directory Team"""
@@ -73,14 +64,12 @@ Wedding Counselors Directory Team"""
     {
         "step_number": 3,
         "delay_days": 5,  # 5 days after second email (8 days total)
-        "subject_template": "Last chance - {company} directory listing",
+        "subject_template": "Final note on your directory listing",
         "email_template": """Hi {firstName},
 
-Final note from me - I wanted to make sure you saw my earlier messages about listing {company} on our new Wedding Counselors Directory.
+Final note from me about listing {company} in the Wedding Counselors Directory. If you want the complimentary founding listing, reply "yes" and I will send the link.
 
-It's completely free and only takes a couple minutes. We're building the go-to resource for couples seeking premarital counseling, and I think you'd be a great fit.
-
-If you're interested, just reply and I'll send the link. If not, no worries at all - I won't follow up again.
+If it is not a fit, no worries and I will close the loop.
 
 Wishing you all the best,
 Wedding Counselors Directory Team"""
@@ -97,6 +86,13 @@ def setup():
         if existing_inbox:
             print(f"Inbox {INBOX_CONFIG['email']} already exists (ID: {existing_inbox.id})")
             inbox = existing_inbox
+            updated = False
+            if inbox.max_per_hour != INBOX_CONFIG["max_per_hour"]:
+                inbox.max_per_hour = INBOX_CONFIG["max_per_hour"]
+                updated = True
+            if updated:
+                db.session.commit()
+                print(f"Updated inbox settings for {inbox.email}")
         else:
             # Create inbox
             inbox = Inbox(**INBOX_CONFIG)
@@ -121,18 +117,31 @@ def setup():
             print(f"Created campaign: {campaign.name} (ID: {campaign.id})")
 
         # Create sequences if they don't exist
-        existing_sequences = Sequence.query.filter_by(campaign_id=campaign.id).count()
-        if existing_sequences > 0:
-            print(f"Campaign already has {existing_sequences} sequences")
-        else:
-            for seq_config in EMAIL_SEQUENCES:
+        existing_sequences = Sequence.query.filter_by(campaign_id=campaign.id).all()
+        existing_by_step = {seq.step_number: seq for seq in existing_sequences}
+        created = 0
+        updated = 0
+        for seq_config in EMAIL_SEQUENCES:
+            seq = existing_by_step.get(seq_config["step_number"])
+            if seq:
+                seq.delay_days = seq_config["delay_days"]
+                seq.subject_template = seq_config["subject_template"]
+                seq.email_template = seq_config["email_template"]
+                seq.active = True
+                updated += 1
+            else:
                 sequence = Sequence(
                     campaign_id=campaign.id,
                     **seq_config
                 )
                 db.session.add(sequence)
+                created += 1
+        if created or updated:
             db.session.commit()
-            print(f"Created {len(EMAIL_SEQUENCES)} email sequences")
+        if updated:
+            print(f"Updated {updated} existing email sequences")
+        if created:
+            print(f"Created {created} new email sequences")
 
         print("\n" + "="*50)
         print("SETUP COMPLETE!")

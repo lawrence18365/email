@@ -45,7 +45,7 @@ Email body:
 
 ---
 Original outreach context:
-We reached out offering services from RateTapMX (ratetapmx.com).
+We reached out about Wedding Counselors Directory (weddingcounselors.com).
 
 Classify the intent as ONE of:
 - interested: They want to learn more or seem open to conversation
@@ -73,7 +73,7 @@ Respond in JSON format:
 }}
 """
 
-REPLY_GENERATION_PROMPT = """You are a friendly, professional sales assistant for RateTapMX.
+REPLY_GENERATION_PROMPT = """You are a friendly, professional sales assistant for Wedding Counselors Directory.
 
 Generate a personalized email reply to this lead.
 
@@ -104,7 +104,7 @@ Guidelines:
 5. If they have questions: answer them helpfully
 6. If not interested: thank them graciously, leave door open
 7. Include a clear call-to-action when appropriate
-8. Sign off as "Best regards, [Sales Team / RateTapMX Team]"
+8. Sign off as "Best regards, Wedding Counselors Directory Team"
 
 DO NOT:
 - Be pushy or aggressive
@@ -115,7 +115,7 @@ DO NOT:
 Respond with ONLY the email body (no subject line, no JSON, just the reply text).
 """
 
-CALENDLY_LINK = os.getenv('CALENDLY_LINK', 'https://calendly.com/ratetapmx/30min')
+CALENDLY_LINK = os.getenv('CALENDLY_LINK', '')
 
 
 class AIResponder:
@@ -207,7 +207,7 @@ class AIResponder:
             "intent": analysis['intent'],
             "sentiment": analysis['sentiment'],
             "key_points": ", ".join(analysis.get('key_points', [])),
-            "previous_email": previous_email or "(Initial outreach about RateTapMX services)"
+            "previous_email": previous_email or "(Initial outreach about Wedding Counselors Directory)"
         }
 
         prompt = REPLY_GENERATION_PROMPT.format(**prompt_data)
@@ -223,7 +223,7 @@ class AIResponder:
 
             # Add meeting link if they're interested
             if analysis['intent'] in [ResponseIntent.INTERESTED, ResponseIntent.MEETING_REQUEST]:
-                if CALENDLY_LINK not in reply:
+                if CALENDLY_LINK and CALENDLY_LINK not in reply:
                     reply += f"\n\nFeel free to book a time that works for you: {CALENDLY_LINK}"
 
             logger.info(f"Generated reply for {lead_data['email']} (intent: {analysis['intent']})")
@@ -242,7 +242,7 @@ Thank you for letting us know. I've removed you from our mailing list and you wo
 If you ever change your mind or have questions in the future, feel free to reach out.
 
 Best regards,
-RateTapMX Team"""
+Wedding Counselors Directory Team"""
 
     def process_response(self, response_record, lead, sent_email=None) -> Tuple[str, Dict]:
         """

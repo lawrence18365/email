@@ -40,6 +40,10 @@ class Config:
     # Application
     TIMEZONE = os.getenv('TIMEZONE', 'America/Mexico_City')
 
+    # Public base URL for links in emails (unsubscribe, etc.)
+    PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', 'http://localhost:5000')
+    UNSUBSCRIBE_TOKEN_MAX_DAYS = int(os.getenv('UNSUBSCRIBE_TOKEN_MAX_DAYS', '365'))
+
     # Deliverability Guardrails
     SPIKE_WINDOW_MINUTES = int(os.getenv('SPIKE_WINDOW_MINUTES', '60'))
     SPIKE_BOUNCE_RATE = float(os.getenv('SPIKE_BOUNCE_RATE', '5.0'))  # %

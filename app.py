@@ -5,6 +5,7 @@ from models import db, Lead, Campaign, Sequence, Inbox, SentEmail, Response, Cam
 from sqlalchemy import text
 from email_handler import EmailSender, EmailReceiver, EmailPersonalizer
 from scheduler import EmailScheduler
+from unsubscribe import verify_unsubscribe_token
 import csv
 from io import StringIO
 from datetime import datetime, timedelta
@@ -104,6 +105,40 @@ def _get_inbox_window(inbox_id: int) -> tuple[int, int]:
 # ============================================================================
 # Dashboard Routes
 # ============================================================================
+
+@app.route('/unsubscribe/<token>')
+def unsubscribe(token):
+    """One-click unsubscribe handler."""
+    max_age_seconds = Config.UNSUBSCRIBE_TOKEN_MAX_DAYS * 24 * 60 * 60
+    data = verify_unsubscribe_token(token, max_age_seconds)
+    if not data:
+        return render_template(
+            'unsubscribe.html',
+            success=False,
+            message="This unsubscribe link is invalid or expired."
+        )
+
+    lead = Lead.query.filter_by(id=data['lead_id'], email=data['email']).first()
+    if not lead:
+        return render_template(
+            'unsubscribe.html',
+            success=True,
+            message="You're already unsubscribed."
+        )
+
+    lead.status = 'not_interested'
+
+    campaign_leads = CampaignLead.query.filter_by(lead_id=lead.id, status='active').all()
+    for cl in campaign_leads:
+        cl.status = 'completed'
+
+    db.session.commit()
+
+    return render_template(
+        'unsubscribe.html',
+        success=True,
+        email=lead.email
+    )
 
 @app.route('/')
 def dashboard():

@@ -165,7 +165,7 @@ class EmailScheduler:
                     lead = campaign_lead.lead
 
                     # Skip if lead has responded
-                    if lead.status == 'responded' or lead.status == 'meeting_booked':
+                    if lead.status in ('responded', 'meeting_booked', 'not_interested', 'unsubscribed'):
                         continue
 
                     # Find next sequence step to send
@@ -366,7 +366,7 @@ class EmailScheduler:
             body = EmailPersonalizer.personalize(sequence.email_template, lead)
 
             # Wrap in professional HTML template with staff signature
-            body_html = wrap_email_html(body, inbox.email)
+            body_html = wrap_email_html(body, inbox.email, lead=lead)
 
             # Send email
             sender = EmailSender(inbox)
@@ -480,7 +480,9 @@ class EmailScheduler:
                         self.db.session.add(response)
 
                         # Update lead status
-                        if lead.status != 'meeting_booked':
+                        if label == 'unsubscribe':
+                            lead.status = 'not_interested'
+                        elif lead.status != 'meeting_booked':
                             lead.status = 'responded'
 
                         # Stop further sequences for this lead in all campaigns
