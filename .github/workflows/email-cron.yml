@@ -61,7 +61,6 @@ jobs:
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"
         run: |
-          cd crm
           python cron_runner.py --all
 
       - name: Run Telegram notifications (every 5 min)
@@ -73,7 +72,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          cd crm
           python telegram_notifier.py --all
 
       - name: Send daily summary (manual only)
@@ -85,7 +83,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          cd crm
           python telegram_notifier.py --summary
 
       - name: Report status
