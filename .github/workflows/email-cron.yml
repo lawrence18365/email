@@ -2,22 +2,9 @@ name: Email Outreach Cron
 
 on:
   schedule:
-    # Run email sending every hour at minute 0
-    - cron: '0 * * * *'
-    # Run notifications every 5 minutes
-    - cron: '*/5 * * * *'
+    # Run hourly during business hours (9am-5pm PT = 17:00-01:00 UTC)
+    - cron: '0 17-23,0-1 * * *'
   workflow_dispatch:  # Allow manual trigger
-    inputs:
-      job_type:
-        description: 'Job to run'
-        required: true
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - send
-          - notify
-          - summary
 
 jobs:
   email-cron:
@@ -37,34 +24,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Determine job type
-        id: job_type
-        run: |
-          # Check if this is a manual trigger with input
-          if [ "${{ github.event.inputs.job_type }}" != "" ]; then
-            echo "type=${{ github.event.inputs.job_type }}" >> $GITHUB_OUTPUT
-          # Check if this is the hourly cron (minute 0)
-          elif [ "$(date +%M)" == "00" ]; then
-            echo "type=send" >> $GITHUB_OUTPUT
-          else
-            echo "type=notify" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Run email sending (hourly)
-        if: steps.job_type.outputs.type == 'send' || steps.job_type.outputs.type == 'all'
+      - name: Send scheduled emails
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           TIMEZONE: America/Los_Angeles
-          MAX_EMAILS_PER_HOUR: "5"
+          MAX_EMAILS_PER_HOUR: "3"
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"
         run: |
           python cron_runner.py --all
 
-      - name: Run Telegram notifications (every 5 min)
-        if: steps.job_type.outputs.type == 'notify' || steps.job_type.outputs.type == 'all'
+      - name: Check for replies and notify
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
@@ -74,19 +46,7 @@ jobs:
         run: |
           python telegram_notifier.py --all
 
-      - name: Send daily summary (manual only)
-        if: steps.job_type.outputs.type == 'summary'
-        env:
-          DATABASE_URI: ${{ secrets.DATABASE_URI }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python telegram_notifier.py --summary
-
       - name: Report status
         if: always()
         run: |
           echo "Job completed at $(date)"
-          echo "Job type: ${{ steps.job_type.outputs.type }}"
