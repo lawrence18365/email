@@ -259,12 +259,14 @@ class AutoReplyScheduler:
 
                     if not reply_text:
                         response.reviewed = True
+                        response.notified = True
                         response.notes = f"AI: {intent} — no reply needed"
                         self.db.session.commit()
                         continue
 
                     # Check if should auto-send
                     if not self.responder.should_auto_send(analysis):
+                        response.notified = True
                         response.notes = f"AI draft (needs review, confidence={analysis.get('confidence', 0):.2f}): {reply_text[:200]}..."
                         self.db.session.commit()
                         logger.info(f"Reply queued for review: {lead.email}")
@@ -300,6 +302,7 @@ class AutoReplyScheduler:
                     if not inbox or not campaign_id or not sequence_id:
                         logger.error(f"Missing inbox/campaign/sequence for reply to {lead.email}")
                         response.reviewed = True
+                        response.notified = True
                         response.notes = f"AI: {intent} — could not send (missing campaign context)"
                         self.db.session.commit()
                         continue
@@ -329,8 +332,9 @@ class AutoReplyScheduler:
                         )
                         self.db.session.add(reply_record)
 
-                        # Mark response as reviewed
+                        # Mark response as reviewed and notified
                         response.reviewed = True
+                        response.notified = True
                         response.notes = f"AI auto-replied ({intent})"
 
                         # Update lead status

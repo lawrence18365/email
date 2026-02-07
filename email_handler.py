@@ -178,7 +178,11 @@ class EmailReceiver:
 
     def fetch_new_responses(self) -> List[Dict]:
         """
-        Fetch unread emails from inbox
+        Fetch recent emails from inbox (last 3 days).
+
+        Uses SINCE date filter instead of UNSEEN so that emails read
+        in another mail client are still picked up.  Duplicate prevention
+        is handled by the caller via message_id checks in the DB.
 
         Returns list of dicts with keys: message_id, in_reply_to, subject, body, date
         """
@@ -194,8 +198,9 @@ class EmailReceiver:
             mail.login(self.username, self.password)
             mail.select('INBOX')
 
-            # Search for unread messages
-            status, messages = mail.search(None, 'UNSEEN')
+            # Search for messages from the last 3 days (catches read emails too)
+            since_date = (datetime.utcnow() - timedelta(days=3)).strftime('%d-%b-%Y')
+            status, messages = mail.search(None, f'SINCE {since_date}')
 
             if status != 'OK':
                 logger.warning(f"No unread messages found in {self.inbox.email}")
@@ -244,9 +249,6 @@ class EmailReceiver:
                         'body': body,
                         'date': date
                     })
-
-                    # Mark as read
-                    mail.store(msg_id, '+FLAGS', '\\Seen')
 
                 except Exception as e:
                     logger.error(f"Error processing message {msg_id}: {str(e)}")

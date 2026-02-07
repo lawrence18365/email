@@ -206,6 +206,7 @@ class Response(db.Model):
     # Manual status tracking
     reviewed = db.Column(Boolean, default=False)
     meeting_booked = db.Column(Boolean, default=False)
+    notified = db.Column(Boolean, default=False)
     notes = db.Column(Text)
     assigned_to = db.Column(String(100))
     label = db.Column(String(50))

@@ -1216,6 +1216,8 @@ def _ensure_response_columns() -> None:
         db.session.execute(text("ALTER TABLE responses ADD COLUMN assigned_to TEXT"))
     if "label" not in existing:
         db.session.execute(text("ALTER TABLE responses ADD COLUMN label TEXT"))
+    if "notified" not in existing:
+        db.session.execute(text("ALTER TABLE responses ADD COLUMN notified BOOLEAN DEFAULT 0"))
     db.session.commit()
 
 

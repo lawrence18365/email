@@ -3,21 +3,19 @@
 Telegram Notifier — Real-time campaign updates
 
 Sends Telegram notifications for:
-- New email replies (from DB responses, not IMAP UNSEEN)
+- New email replies (from DB responses, tracked via `notified` column)
 - AI auto-reply confirmations
 - Lead status alerts
 - Daily campaign summary
 
-Uses database-tracked responses instead of IMAP UNSEEN status,
-so notifications work even if emails are read in the mail client first.
+Uses database `notified` column to track which responses have been
+notified, so state persists across GitHub Actions runs.
 """
 
 import os
 import sys
-import time
 import logging
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import requests
 
@@ -39,7 +37,6 @@ load_dotenv()
 # Configuration
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
-NOTIFIED_FILE = Path(script_dir) / '.notified_responses'
 
 from app import app
 from models import db, Inbox, Response, Lead, CampaignLead, Campaign, SentEmail
@@ -71,41 +68,26 @@ def send_telegram_message(message: str) -> bool:
         return False
 
 
-def load_notified_ids():
-    """Load set of already-notified response IDs."""
-    if NOTIFIED_FILE.exists():
-        content = NOTIFIED_FILE.read_text().strip()
-        if content:
-            return set(content.split('\n'))
-    return set()
-
-
-def save_notified_id(response_id: str):
-    """Add response ID to notified set."""
-    notified = load_notified_ids()
-    notified.add(str(response_id))
-    # Keep only last 500 to prevent bloat
-    if len(notified) > 500:
-        notified = set(list(notified)[-500:])
-    NOTIFIED_FILE.write_text('\n'.join(notified))
-
-
 def check_new_responses():
-    """Check DB for new responses and notify via Telegram."""
-    with app.app_context():
-        notified = load_notified_ids()
+    """Check DB for new responses and notify via Telegram.
 
-        # Get all responses, check which haven't been notified
-        responses = Response.query.order_by(Response.received_at.desc()).limit(50).all()
+    Uses the `notified` boolean column on the Response model so that
+    notification state persists in the database (works across fresh
+    GitHub Actions checkouts).
+    """
+    with app.app_context():
+        # Get responses that haven't been notified yet
+        pending = Response.query.filter_by(notified=False).order_by(
+            Response.received_at.desc()
+        ).limit(50).all()
+
         new_count = 0
 
-        for resp in responses:
-            if str(resp.id) in notified:
-                continue
-
+        for resp in pending:
             lead = resp.lead
             if not lead:
-                save_notified_id(resp.id)
+                resp.notified = True
+                db.session.commit()
                 continue
 
             name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
@@ -134,7 +116,8 @@ def check_new_responses():
             )
 
             if send_telegram_message(notification):
-                save_notified_id(resp.id)
+                resp.notified = True
+                db.session.commit()
                 new_count += 1
                 logger.info(f"Notified: reply from {lead.email}")
 
@@ -169,7 +152,7 @@ def check_lead_status():
                     f"Replied/stopped: {stopped}\n\n"
                     f"Add more leads to continue outreach."
                 )
-            elif active <= 50:
+            elif active <= 20:
                 send_telegram_message(
                     f"<b>Low Leads Warning</b>\n\n"
                     f"Campaign: {campaign.name}\n"
@@ -198,12 +181,19 @@ def send_daily_summary():
             ).count()
 
             total_sent = SentEmail.query.filter_by(campaign_id=campaign.id).count()
-            total_responses = Response.query.join(SentEmail).filter(
-                SentEmail.campaign_id == campaign.id
+
+            # Count responses — use lead-based lookup so responses without
+            # a sent_email_id are still counted
+            campaign_lead_ids = db.session.query(CampaignLead.lead_id).filter_by(
+                campaign_id=campaign.id
+            ).subquery()
+            total_responses = Response.query.filter(
+                Response.lead_id.in_(campaign_lead_ids)
             ).count()
 
             # Count AI auto-replies
             ai_replied = Response.query.filter(
+                Response.lead_id.in_(campaign_lead_ids),
                 Response.notes.like('%AI auto-replied%')
             ).count()
 
@@ -255,19 +245,23 @@ def send_weekly_digest():
 
             sent_alltime = SentEmail.query.filter_by(campaign_id=campaign.id).count()
 
-            replies_week = Response.query.join(SentEmail).filter(
-                SentEmail.campaign_id == campaign.id,
+            # Use lead-based lookup for response counts
+            campaign_lead_ids = db.session.query(CampaignLead.lead_id).filter_by(
+                campaign_id=campaign.id
+            ).subquery()
+
+            replies_week = Response.query.filter(
+                Response.lead_id.in_(campaign_lead_ids),
                 Response.received_at >= week_start
             ).count()
 
-            replies_alltime = Response.query.join(SentEmail).filter(
-                SentEmail.campaign_id == campaign.id
+            replies_alltime = Response.query.filter(
+                Response.lead_id.in_(campaign_lead_ids)
             ).count()
 
             ai_replied = Response.query.filter(
+                Response.lead_id.in_(campaign_lead_ids),
                 Response.notes.like('%AI auto-replied%')
-            ).join(SentEmail).filter(
-                SentEmail.campaign_id == campaign.id
             ).count()
 
             reply_rate = (replies_alltime / sent_alltime * 100) if sent_alltime > 0 else 0
