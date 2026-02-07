@@ -284,15 +284,24 @@ class AutoReplyScheduler:
                     if not inbox:
                         inbox = Inbox.query.filter_by(active=True).first()
 
-                    # If no campaign from sent_email, find it from the lead's campaign
-                    if not campaign_id:
+                    # If no campaign/sequence from sent_email, find from lead's history
+                    if not campaign_id or not sequence_id:
                         from models import CampaignLead as CL
                         cl = CL.query.filter_by(lead_id=lead.id).first()
-                        if cl:
+                        if cl and not campaign_id:
                             campaign_id = cl.campaign_id
+                        # Find any sequence for this campaign to satisfy NOT NULL
+                        if campaign_id and not sequence_id:
+                            from models import Sequence
+                            seq = Sequence.query.filter_by(campaign_id=campaign_id).first()
+                            if seq:
+                                sequence_id = seq.id
 
-                    if not inbox or not campaign_id:
-                        logger.error(f"No inbox or campaign for reply to {lead.email}")
+                    if not inbox or not campaign_id or not sequence_id:
+                        logger.error(f"Missing inbox/campaign/sequence for reply to {lead.email}")
+                        response.reviewed = True
+                        response.notes = f"AI: {intent} — could not send (missing campaign context)"
+                        self.db.session.commit()
                         continue
 
                     # Send the reply
@@ -346,6 +355,7 @@ class AutoReplyScheduler:
                 except Exception as e:
                     logger.error(f"Error processing response {response.id}: {str(e)}")
                     self.db.session.rollback()
+                    _notify_failure(lead if lead else None, str(e))
                     continue
 
         return replies_sent
@@ -376,6 +386,32 @@ def _notify_auto_reply(lead, intent, reply_text):
         )
     except Exception as e:
         logger.warning(f"Telegram notify failed: {e}")
+
+
+def _notify_failure(lead, error_msg):
+    """Send Telegram notification when AI reply fails."""
+    try:
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        if not token or not chat_id:
+            return
+
+        email = lead.email if lead else "unknown"
+        error_short = error_msg[:200].replace('<', '&lt;').replace('>', '&gt;')
+
+        msg = (
+            f"<b>AI Reply Failed</b>\n\n"
+            f"<b>Lead:</b> {email}\n"
+            f"<b>Error:</b> {error_short}"
+        )
+
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+            timeout=10
+        )
+    except Exception:
+        pass
 
 
 def run_auto_replies():
