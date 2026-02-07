@@ -17,7 +17,7 @@ sys.path.insert(0, script_dir)
 from dotenv import load_dotenv
 load_dotenv()
 
-from app import app
+from app import app, _ensure_response_columns
 from models import db, Lead, Inbox, Campaign, Sequence, CampaignLead, SentEmail, Response
 from email_handler import EmailSender, EmailReceiver, EmailPersonalizer, RateLimiter
 from config import Config
@@ -25,6 +25,10 @@ from config import Config
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Run lightweight migrations before any queries
+with app.app_context():
+    _ensure_response_columns()
 
 
 def is_within_sending_hours():

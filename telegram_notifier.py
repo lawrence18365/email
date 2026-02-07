@@ -38,8 +38,12 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
-from app import app
+from app import app, _ensure_response_columns
 from models import db, Inbox, Response, Lead, CampaignLead, Campaign, SentEmail
+
+# Run lightweight migrations before any queries
+with app.app_context():
+    _ensure_response_columns()
 
 
 def send_telegram_message(message: str) -> bool:

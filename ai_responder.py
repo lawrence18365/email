@@ -422,8 +422,11 @@ def run_auto_replies():
     """Standalone function to run auto-replies (for cron_runner)."""
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from app import app
+    from app import app, _ensure_response_columns
     from models import db
+
+    with app.app_context():
+        _ensure_response_columns()
 
     scheduler = AutoReplyScheduler(app=app, db=db)
     count = scheduler.process_pending_responses()
