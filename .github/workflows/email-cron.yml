@@ -30,6 +30,8 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           TIMEZONE: America/Los_Angeles
+          VERIFALIA_USERNAME: ${{ secrets.VERIFALIA_USERNAME }}
+          VERIFALIA_PASSWORD: ${{ secrets.VERIFALIA_PASSWORD }}
           MAX_EMAILS_PER_HOUR: "3"
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"

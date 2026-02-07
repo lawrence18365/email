@@ -1220,6 +1220,18 @@ def _ensure_response_columns() -> None:
         db.session.execute(text("ALTER TABLE responses ADD COLUMN notified BOOLEAN DEFAULT 0"))
     db.session.commit()
 
+    # Email verification columns on leads table
+    lead_cols = db.session.execute(text("PRAGMA table_info(leads)")).fetchall()
+    lead_existing = {col[1] for col in lead_cols}
+
+    if "email_verified" not in lead_existing:
+        db.session.execute(text("ALTER TABLE leads ADD COLUMN email_verified BOOLEAN DEFAULT 0"))
+    if "email_verification_status" not in lead_existing:
+        db.session.execute(text("ALTER TABLE leads ADD COLUMN email_verification_status TEXT"))
+    if "email_verified_at" not in lead_existing:
+        db.session.execute(text("ALTER TABLE leads ADD COLUMN email_verified_at DATETIME"))
+    db.session.commit()
+
 
 if __name__ == '__main__':
     create_tables()

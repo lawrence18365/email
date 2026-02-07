@@ -182,6 +182,16 @@ class EmailScheduler:
                     if not selected_inbox:
                         continue
 
+                    # Verify email before sending (Verifalia - 25 free/day)
+                    from email_verifier import EmailVerifier
+                    verifier = EmailVerifier(self.db.session)
+                    verification_status = verifier.verify_email(lead)
+                    if not verifier.should_send(verification_status):
+                        logger.warning(f"Skipping {lead.email}: verification={verification_status}")
+                        campaign_lead.status = 'stopped'
+                        self.db.session.commit()
+                        continue
+
                     # Send the email
                     success = self._send_sequence_email(lead, campaign, next_sequence, selected_inbox)
 

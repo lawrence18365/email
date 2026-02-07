@@ -123,6 +123,16 @@ def send_scheduled_emails():
                     logger.info(f"Rate limit reached for inbox {inbox.email}")
                     break
 
+                # Verify email before sending (Verifalia - 25 free/day)
+                from email_verifier import EmailVerifier
+                verifier = EmailVerifier(db.session)
+                verification_status = verifier.verify_email(lead)
+                if not verifier.should_send(verification_status):
+                    logger.warning(f"Skipping {lead.email}: verification={verification_status}")
+                    cl.status = 'stopped'
+                    db.session.commit()
+                    continue
+
                 # Personalize and send email
                 try:
                     subject = personalizer.personalize(next_sequence.subject_template, lead)

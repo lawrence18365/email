@@ -23,6 +23,11 @@ class Lead(db.Model):
     created_at = db.Column(DateTime, default=datetime.utcnow)
     updated_at = db.Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Email verification
+    email_verified = db.Column(Boolean, default=False)
+    email_verification_status = db.Column(String(50))  # Deliverable, Undeliverable, Risky, Unknown
+    email_verified_at = db.Column(DateTime)
+
     # Enrichment fields
     enriched = db.Column(Boolean, default=False)
     enriched_at = db.Column(DateTime)

@@ -44,6 +44,10 @@ class Config:
     PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', 'http://localhost:5000')
     UNSUBSCRIBE_TOKEN_MAX_DAYS = int(os.getenv('UNSUBSCRIBE_TOKEN_MAX_DAYS', '365'))
 
+    # Email Verification (Verifalia - 25 free/day)
+    VERIFALIA_USERNAME = os.getenv('VERIFALIA_USERNAME', '')
+    VERIFALIA_PASSWORD = os.getenv('VERIFALIA_PASSWORD', '')
+
     # Deliverability Guardrails
     SPIKE_WINDOW_MINUTES = int(os.getenv('SPIKE_WINDOW_MINUTES', '60'))
     SPIKE_BOUNCE_RATE = float(os.getenv('SPIKE_BOUNCE_RATE', '5.0'))  # %
