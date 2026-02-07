@@ -54,6 +54,19 @@ def send_scheduled_emails():
         rate_limiter = RateLimiter(db.session)
         personalizer = EmailPersonalizer()
 
+        # Enforce daily send cap (matches Verifalia free tier: 25/day)
+        today_start = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+        sent_today = SentEmail.query.filter(
+            SentEmail.sent_at >= today_start,
+            SentEmail.status == 'sent'
+        ).count()
+        daily_cap = int(os.environ.get('DAILY_SEND_CAP', '25'))
+        if sent_today >= daily_cap:
+            logger.info(f"Daily send cap reached ({sent_today}/{daily_cap}). Stopping.")
+            return
+        remaining_today = daily_cap - sent_today
+        sent_this_run = 0
+
         # Get active campaigns
         active_campaigns = Campaign.query.filter_by(status='active').all()
         logger.info(f"Found {len(active_campaigns)} active campaigns")
@@ -165,6 +178,11 @@ def send_scheduled_emails():
 
                         db.session.commit()
                         logger.info(f"Sent email to {lead.email} (step {next_sequence.step_number})")
+
+                        sent_this_run += 1
+                        if sent_this_run >= remaining_today:
+                            logger.info(f"Daily send cap reached ({sent_today + sent_this_run}/{daily_cap}). Stopping.")
+                            return
                     else:
                         logger.error(f"Failed to send to {lead.email}: {error}")
 

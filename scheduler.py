@@ -3,6 +3,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import logging
+import os
 from config import Config
 
 logging.basicConfig(level=logging.INFO)
@@ -150,6 +151,18 @@ class EmailScheduler:
                 logger.warning("Paused all campaigns due to deliverability spike")
             return 0
 
+        # Enforce daily send cap (matches Verifalia free tier: 25/day)
+        from models import SentEmail as SE
+        today_start = datetime.combine(now_local.date(), datetime.min.time())
+        sent_today = SE.query.filter(
+            SE.sent_at >= today_start,
+            SE.status == 'sent'
+        ).count()
+        daily_cap = int(os.environ.get('DAILY_SEND_CAP', '25'))
+        if sent_today >= daily_cap:
+            logger.info(f"Daily send cap reached ({sent_today}/{daily_cap}). Stopping.")
+            return 0
+
         # Get all active campaigns
         active_campaigns = Campaign.query.filter_by(status='active').all()
 
@@ -197,6 +210,11 @@ class EmailScheduler:
 
                     if success:
                         sent_count += 1
+
+                        # Stop if we've hit the daily cap this run
+                        if sent_today + sent_count >= daily_cap:
+                            logger.info(f"Daily send cap reached ({sent_today + sent_count}/{daily_cap}). Stopping.")
+                            return sent_count
 
                         # Update lead status
                         if lead.status == 'new':
