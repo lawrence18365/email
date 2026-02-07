@@ -270,16 +270,29 @@ class AutoReplyScheduler:
                         logger.info(f"Reply queued for review: {lead.email}")
                         continue
 
-                    # Get inbox to send from
+                    # Get inbox and campaign context
                     sent_email = response.sent_email
                     inbox = None
-                    if sent_email and sent_email.inbox:
+                    campaign_id = None
+                    sequence_id = None
+
+                    if sent_email:
                         inbox = sent_email.inbox
-                    else:
-                        inbox = Inbox.query.filter_by(active=True).first()
+                        campaign_id = sent_email.campaign_id
+                        sequence_id = sent_email.sequence_id
 
                     if not inbox:
-                        logger.error("No active inbox for sending reply")
+                        inbox = Inbox.query.filter_by(active=True).first()
+
+                    # If no campaign from sent_email, find it from the lead's campaign
+                    if not campaign_id:
+                        from models import CampaignLead as CL
+                        cl = CL.query.filter_by(lead_id=lead.id).first()
+                        if cl:
+                            campaign_id = cl.campaign_id
+
+                    if not inbox or not campaign_id:
+                        logger.error(f"No inbox or campaign for reply to {lead.email}")
                         continue
 
                     # Send the reply
@@ -297,8 +310,8 @@ class AutoReplyScheduler:
                         # Record sent reply
                         reply_record = SentEmail(
                             lead_id=lead.id,
-                            campaign_id=sent_email.campaign_id if sent_email else None,
-                            sequence_id=sent_email.sequence_id if sent_email else None,
+                            campaign_id=campaign_id,
+                            sequence_id=sequence_id,
                             inbox_id=inbox.id,
                             message_id=message_id,
                             subject=reply_subject,
