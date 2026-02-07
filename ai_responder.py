@@ -1,5 +1,5 @@
 """
-AI Email Responder — OpenRouter/Kimi K2.5 Powered
+AI Email Responder — Google Gemini Powered
 
 Reads incoming emails, understands intent, drafts personalized replies,
 and sends them automatically. Uses AI_REPLY_CONTEXT.md as the single
@@ -25,10 +25,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration — OpenRouter with free model
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
-OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-AI_MODEL = os.getenv('AI_MODEL', 'openai/gpt-oss-120b:free')
+# Configuration — Google Gemini API (free tier)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+GEMINI_MODEL = os.getenv('AI_MODEL', 'gemini-2.5-flash')
+GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 # Load context document
 CONTEXT_DOC_PATH = Path(__file__).parent / 'AI_REPLY_CONTEXT.md'
@@ -89,49 +89,43 @@ IMPORTANT RULES:
 
 
 class AIResponder:
-    """AI-powered email response system using OpenRouter/Kimi"""
+    """AI-powered email response system using Google Gemini"""
 
     def __init__(self, db_session=None):
         self.db = db_session
-        if not OPENROUTER_API_KEY:
-            logger.warning("OPENROUTER_API_KEY not set — AI responder will not function")
+        if not GEMINI_API_KEY:
+            logger.warning("GEMINI_API_KEY not set — AI responder will not function")
 
     def _call_ai(self, system: str, user: str, max_tokens: int = 1024) -> Optional[str]:
-        """Make an API call to OpenRouter."""
-        if not OPENROUTER_API_KEY:
-            logger.error("No OPENROUTER_API_KEY configured")
+        """Make an API call to Google Gemini."""
+        if not GEMINI_API_KEY:
+            logger.error("No GEMINI_API_KEY configured")
             return None
 
         try:
             resp = requests.post(
-                OPENROUTER_ENDPOINT,
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://weddingcounselors.com",
-                    "X-Title": "Wedding Counselors Auto-Reply",
-                },
+                f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
+                headers={"Content-Type": "application/json"},
                 json={
-                    "model": AI_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user}
-                    ],
-                    "max_tokens": max_tokens,
-                    "temperature": 0.7
+                    "systemInstruction": {"parts": [{"text": system}]},
+                    "contents": [{"role": "user", "parts": [{"text": user}]}],
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": 0.7
+                    }
                 },
                 timeout=120
             )
 
             if resp.status_code == 200:
                 data = resp.json()
-                content = data['choices'][0]['message']['content']
+                content = data['candidates'][0]['content']['parts'][0]['text']
                 if content:
                     return content.strip()
-                logger.warning("AI returned empty content")
+                logger.warning("Gemini returned empty content")
                 return None
             else:
-                logger.error(f"OpenRouter API error: {resp.status_code} — {resp.text[:200]}")
+                logger.error(f"Gemini API error: {resp.status_code} — {resp.text[:200]}")
                 return None
 
         except Exception as e:
