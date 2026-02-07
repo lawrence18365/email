@@ -25,12 +25,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration — supports Kimi Code API (preferred) or OpenRouter fallback
-KIMI_API_KEY = os.getenv('KIMI_API_KEY', '')
-KIMI_ENDPOINT = "https://api.kimi.com/coding/v1/chat/completions"
+# Configuration — OpenRouter with free model
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-AI_MODEL = os.getenv('AI_MODEL', 'kimi-k2.5')
+AI_MODEL = os.getenv('AI_MODEL', 'openai/gpt-oss-120b:free')
 
 # Load context document
 CONTEXT_DOC_PATH = Path(__file__).parent / 'AI_REPLY_CONTEXT.md'
@@ -95,38 +93,24 @@ class AIResponder:
 
     def __init__(self, db_session=None):
         self.db = db_session
-        if not KIMI_API_KEY and not OPENROUTER_API_KEY:
-            logger.warning("No AI API key set (KIMI_API_KEY or OPENROUTER_API_KEY) — AI responder will not function")
+        if not OPENROUTER_API_KEY:
+            logger.warning("OPENROUTER_API_KEY not set — AI responder will not function")
 
     def _call_ai(self, system: str, user: str, max_tokens: int = 1024) -> Optional[str]:
-        """Make an API call to Kimi Code API (preferred) or OpenRouter fallback."""
-        # Pick provider: Kimi Code first, OpenRouter fallback
-        if KIMI_API_KEY:
-            api_key = KIMI_API_KEY
-            endpoint = KIMI_ENDPOINT
-            provider = "Kimi"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
-        elif OPENROUTER_API_KEY:
-            api_key = OPENROUTER_API_KEY
-            endpoint = OPENROUTER_ENDPOINT
-            provider = "OpenRouter"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://weddingcounselors.com",
-                "X-Title": "Wedding Counselors Auto-Reply",
-            }
-        else:
-            logger.error("No AI API key configured")
+        """Make an API call to OpenRouter."""
+        if not OPENROUTER_API_KEY:
+            logger.error("No OPENROUTER_API_KEY configured")
             return None
 
         try:
             resp = requests.post(
-                endpoint,
-                headers=headers,
+                OPENROUTER_ENDPOINT,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://weddingcounselors.com",
+                    "X-Title": "Wedding Counselors Auto-Reply",
+                },
                 json={
                     "model": AI_MODEL,
                     "messages": [
@@ -147,11 +131,11 @@ class AIResponder:
                 logger.warning("AI returned empty content")
                 return None
             else:
-                logger.error(f"{provider} API error: {resp.status_code} — {resp.text[:200]}")
+                logger.error(f"OpenRouter API error: {resp.status_code} — {resp.text[:200]}")
                 return None
 
         except Exception as e:
-            logger.error(f"AI call failed ({provider}): {e}")
+            logger.error(f"AI call failed: {e}")
             return None
 
     def analyze_intent(self, email_data: Dict) -> Dict:
