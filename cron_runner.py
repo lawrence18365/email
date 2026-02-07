@@ -32,10 +32,13 @@ with app.app_context():
 
 
 def is_within_sending_hours():
-    """Check if current time is within allowed sending hours"""
+    """Check if current time is within allowed sending hours (Mon-Fri only)"""
     tz = ZoneInfo(Config.TIMEZONE)
     now = datetime.now(tz)
     hour = now.hour
+    # Only send outreach Mon-Fri (0=Monday, 6=Sunday)
+    if now.weekday() >= 5:
+        return False
     return Config.DEFAULT_SENDING_HOURS_START <= hour < Config.DEFAULT_SENDING_HOURS_END
 
 
