@@ -200,7 +200,7 @@ Sarah, Wedding Counselors Directory"""
             body=email_data.get('body', '')
         )
 
-        reply = self._call_ai(SYSTEM_PROMPT, prompt)
+        reply = self._call_ai(SYSTEM_PROMPT, prompt, max_tokens=2048)
         if reply:
             logger.info(f"Generated reply for {email_data['from_email']} (intent: {intent})")
         return reply
