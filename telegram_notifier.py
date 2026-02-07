@@ -224,6 +224,133 @@ def send_daily_summary():
             )
 
 
+def send_weekly_digest():
+    """Send comprehensive weekly report — designed for Sunday evenings."""
+    with app.app_context():
+        now = datetime.utcnow()
+        week_start = now - timedelta(days=7)
+
+        campaigns = Campaign.query.filter_by(status='active').all()
+
+        # --- Aggregate stats across all campaigns ---
+        total_sent_week = 0
+        total_sent_alltime = 0
+        total_replies_week = 0
+        total_replies_alltime = 0
+        total_ai_replied = 0
+        total_active_leads = 0
+        total_stopped = 0
+        total_completed = 0
+        campaign_blocks = []
+
+        for campaign in campaigns:
+            active = CampaignLead.query.filter_by(campaign_id=campaign.id, status='active').count()
+            completed = CampaignLead.query.filter_by(campaign_id=campaign.id, status='completed').count()
+            stopped = CampaignLead.query.filter_by(campaign_id=campaign.id, status='stopped').count()
+
+            sent_week = SentEmail.query.filter(
+                SentEmail.campaign_id == campaign.id,
+                SentEmail.sent_at >= week_start
+            ).count()
+
+            sent_alltime = SentEmail.query.filter_by(campaign_id=campaign.id).count()
+
+            replies_week = Response.query.join(SentEmail).filter(
+                SentEmail.campaign_id == campaign.id,
+                Response.received_at >= week_start
+            ).count()
+
+            replies_alltime = Response.query.join(SentEmail).filter(
+                SentEmail.campaign_id == campaign.id
+            ).count()
+
+            ai_replied = Response.query.filter(
+                Response.notes.like('%AI auto-replied%')
+            ).join(SentEmail).filter(
+                SentEmail.campaign_id == campaign.id
+            ).count()
+
+            reply_rate = (replies_alltime / sent_alltime * 100) if sent_alltime > 0 else 0
+            week_rate = (replies_week / sent_week * 100) if sent_week > 0 else 0
+
+            total_sent_week += sent_week
+            total_sent_alltime += sent_alltime
+            total_replies_week += replies_week
+            total_replies_alltime += replies_alltime
+            total_ai_replied += ai_replied
+            total_active_leads += active
+            total_stopped += stopped
+            total_completed += completed
+
+            campaign_blocks.append(
+                f"<b>{campaign.name}</b>\n"
+                f"  Sent this week: {sent_week}\n"
+                f"  Replies this week: {replies_week}"
+                + (f" ({week_rate:.1f}%)" if sent_week > 0 else "") + "\n"
+                f"  Leads: {active} active / {stopped} replied / {completed} done"
+            )
+
+        # --- Estimated days until leads exhausted ---
+        if total_sent_week > 0:
+            daily_rate = total_sent_week / 7
+            days_remaining = int(total_active_leads / daily_rate) if daily_rate > 0 else 999
+            runway = f"~{days_remaining} days at current pace"
+        else:
+            runway = "N/A (no sends this week)"
+
+        # --- Top responders this week ---
+        recent_responses = Response.query.filter(
+            Response.received_at >= week_start
+        ).order_by(Response.received_at.desc()).limit(10).all()
+
+        responder_lines = []
+        for resp in recent_responses:
+            lead = resp.lead
+            if not lead:
+                continue
+            name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+            name = name.replace('<', '&lt;').replace('>', '&gt;')
+            status_tag = ""
+            if resp.notes and "AI auto-replied" in resp.notes:
+                status_tag = " [AI replied]"
+            elif resp.reviewed:
+                status_tag = " [reviewed]"
+            responder_lines.append(f"  {name}{status_tag}")
+
+        # --- Build the digest ---
+        overall_rate = (total_replies_alltime / total_sent_alltime * 100) if total_sent_alltime > 0 else 0
+
+        msg = (
+            f"<b>WEEKLY DIGEST</b>\n"
+            f"{now.strftime('%b %d, %Y')}\n"
+            f"{'='*25}\n\n"
+            f"<b>THIS WEEK</b>\n"
+            f"  Emails sent: {total_sent_week}\n"
+            f"  Replies received: {total_replies_week}\n"
+            f"  AI auto-replies sent: {total_ai_replied}\n\n"
+            f"<b>ALL TIME</b>\n"
+            f"  Total sent: {total_sent_alltime}\n"
+            f"  Total replies: {total_replies_alltime} ({overall_rate:.1f}%)\n\n"
+            f"<b>PIPELINE</b>\n"
+            f"  Active leads remaining: {total_active_leads}\n"
+            f"  Lead runway: {runway}\n\n"
+        )
+
+        # Add campaign breakdowns
+        if campaign_blocks:
+            msg += "<b>BY CAMPAIGN</b>\n"
+            msg += "\n".join(campaign_blocks)
+            msg += "\n\n"
+
+        # Add recent responders
+        if responder_lines:
+            msg += "<b>RECENT REPLIES</b>\n"
+            msg += "\n".join(responder_lines[:8])
+
+        send_telegram_message(msg)
+        logger.info("Weekly digest sent")
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Telegram Notifier')
@@ -231,6 +358,7 @@ if __name__ == "__main__":
     parser.add_argument('--test', action='store_true', help='Send test notification')
     parser.add_argument('--leads', action='store_true', help='Check lead status')
     parser.add_argument('--summary', action='store_true', help='Send daily summary')
+    parser.add_argument('--weekly', action='store_true', help='Send weekly digest')
     parser.add_argument('--all', action='store_true', help='Run all checks')
 
     args = parser.parse_args()
@@ -240,6 +368,11 @@ if __name__ == "__main__":
             print("Test notification sent.")
         else:
             print("Failed to send. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+        sys.exit(0)
+
+    if args.weekly:
+        send_weekly_digest()
+        print("Weekly digest sent.")
         sys.exit(0)
 
     if args.summary:
