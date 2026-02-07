@@ -1,17 +1,23 @@
 """
-AI Email Responder - Fully Autonomous Reply System
+AI Email Responder — OpenRouter/Kimi K2.5 Powered
 
 Reads incoming emails, understands intent, drafts personalized replies,
-and sends them automatically like a human assistant.
+and sends them automatically. Uses AI_REPLY_CONTEXT.md as the single
+source of truth for all factual claims.
 """
 
 import os
 import re
 import json
 import logging
-from datetime import datetime, timedelta
+import smtplib
+from datetime import datetime
 from typing import Optional, Dict, List, Tuple
-from anthropic import Anthropic
+from pathlib import Path
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,341 +25,253 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Anthropic client
-anthropic = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+# Configuration
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
+OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+AI_MODEL = os.getenv('AI_MODEL', 'moonshotai/kimi-k2.5')
 
-# Response categories
+# Load context document
+CONTEXT_DOC_PATH = Path(__file__).parent / 'AI_REPLY_CONTEXT.md'
+CONTEXT_DOC = ""
+if CONTEXT_DOC_PATH.exists():
+    CONTEXT_DOC = CONTEXT_DOC_PATH.read_text()
+else:
+    logger.warning(f"AI_REPLY_CONTEXT.md not found at {CONTEXT_DOC_PATH}")
+
+
 class ResponseIntent:
-    INTERESTED = "interested"  # Wants to learn more, schedule call
-    MEETING_REQUEST = "meeting_request"  # Explicitly asks for meeting
-    QUESTION = "question"  # Has specific questions
-    NOT_INTERESTED = "not_interested"  # Polite decline
-    UNSUBSCRIBE = "unsubscribe"  # Wants to be removed
-    OUT_OF_OFFICE = "out_of_office"  # Auto-reply, OOO
-    SPAM = "spam"  # Irrelevant/spam response
-    UNCLEAR = "unclear"  # Can't determine intent
+    INTERESTED = "interested"
+    MEETING_REQUEST = "meeting_request"
+    QUESTION = "question"
+    NOT_INTERESTED = "not_interested"
+    UNSUBSCRIBE = "unsubscribe"
+    OUT_OF_OFFICE = "out_of_office"
+    SPAM = "spam"
+    BOUNCE = "bounce"
+    UNCLEAR = "unclear"
 
 
-INTENT_ANALYSIS_PROMPT = """Analyze this email response and determine the sender's intent.
+SYSTEM_PROMPT = f"""You are an AI email assistant for Wedding Counselors Directory.
+You MUST follow every rule in the context document below.
+Do NOT say anything not covered by this document.
+If something isn't in this doc, do NOT say it.
 
-Email from: {from_name} ({from_email})
-Company: {company}
+{CONTEXT_DOC}"""
+
+INTENT_ANALYSIS_PROMPT = """Analyze this email and classify the sender's intent.
+
+From: {from_name} ({from_email})
 Subject: {subject}
 
 Email body:
 {body}
 
 ---
-Original outreach context:
-We reached out about Wedding Counselors Directory (weddingcounselors.com).
+Classify as ONE of: interested, meeting_request, question, not_interested, unsubscribe, out_of_office, spam, bounce, unclear
 
-Classify the intent as ONE of:
-- interested: They want to learn more or seem open to conversation
-- meeting_request: They explicitly want to schedule a meeting/call
-- question: They have specific questions about our offering
-- not_interested: They politely declined or said not now
-- unsubscribe: They want to be removed from emails
-- out_of_office: This is an auto-reply or out of office message
-- spam: Irrelevant response or spam
-- unclear: Can't determine their intent
+Respond in JSON only:
+{{"intent": "category", "sentiment": "positive/neutral/negative", "urgency": "high/medium/low", "key_points": ["point1"], "confidence": 0.0-1.0}}"""
 
-Also extract:
-- sentiment: positive, neutral, negative
-- urgency: high, medium, low
-- key_points: List of main points they mentioned
+REPLY_GENERATION_PROMPT = """Generate a reply to this email. Intent: {intent}
 
-Respond in JSON format:
-{{
-    "intent": "category",
-    "sentiment": "positive/neutral/negative",
-    "urgency": "high/medium/low",
-    "key_points": ["point1", "point2"],
-    "suggested_action": "brief suggestion",
-    "confidence": 0.0-1.0
-}}
-"""
-
-REPLY_GENERATION_PROMPT = """You are a friendly, professional sales assistant for Wedding Counselors Directory.
-
-Generate a personalized email reply to this lead.
-
-Lead info:
-- Name: {first_name} {last_name}
-- Company: {company}
-- Email: {email}
+From: {from_name} <{from_email}>
+Subject: {subject}
 
 Their message:
-Subject: {subject}
 {body}
 
-Analysis:
-- Intent: {intent}
-- Sentiment: {sentiment}
-- Key points: {key_points}
-
-Our previous outreach:
-{previous_email}
-
----
-
-Guidelines:
-1. Be warm, professional, and conversational (not salesy)
-2. Address their specific points/questions directly
-3. Keep it concise (3-5 short paragraphs max)
-4. If they're interested: propose next steps (call/demo)
-5. If they have questions: answer them helpfully
-6. If not interested: thank them graciously, leave door open
-7. Include a clear call-to-action when appropriate
-8. Sign off as "Best regards, Wedding Counselors Directory Team"
-
-DO NOT:
-- Be pushy or aggressive
-- Use excessive exclamation marks
-- Include generic filler phrases
-- Make up information about our product
-
-Respond with ONLY the email body (no subject line, no JSON, just the reply text).
-"""
-
-CALENDLY_LINK = os.getenv('CALENDLY_LINK', '')
+Follow the context document rules exactly. Output ONLY the plain email body text — no subject line, no JSON, no markdown."""
 
 
 class AIResponder:
-    """AI-powered email response system"""
+    """AI-powered email response system using OpenRouter/Kimi"""
 
     def __init__(self, db_session=None):
         self.db = db_session
+        if not OPENROUTER_API_KEY:
+            logger.warning("OPENROUTER_API_KEY not set — AI responder will not function")
+
+    def _call_ai(self, system: str, user: str, max_tokens: int = 4096) -> Optional[str]:
+        """Make an API call to OpenRouter."""
+        if not OPENROUTER_API_KEY:
+            logger.error("No OPENROUTER_API_KEY configured")
+            return None
+
+        try:
+            resp = requests.post(
+                OPENROUTER_ENDPOINT,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://weddingcounselors.com",
+                    "X-Title": "Wedding Counselors Auto-Reply"
+                },
+                json={
+                    "model": AI_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user}
+                    ],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.7
+                },
+                timeout=120
+            )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data['choices'][0]['message']['content']
+                if content:
+                    return content.strip()
+                logger.warning("AI returned empty content")
+                return None
+            else:
+                logger.error(f"OpenRouter API error: {resp.status_code} — {resp.text[:200]}")
+                return None
+
+        except Exception as e:
+            logger.error(f"AI call failed: {e}")
+            return None
 
     def analyze_intent(self, email_data: Dict) -> Dict:
-        """
-        Analyze the intent of an incoming email
+        """Analyze the intent of an incoming email."""
+        # Quick heuristic checks first (no API call needed)
+        body = (email_data.get('body') or '').lower()
+        subject = (email_data.get('subject') or '').lower()
+        from_email = (email_data.get('from_email') or '').lower()
 
-        Args:
-            email_data: Dict with keys: from_name, from_email, company, subject, body
+        # Bounce detection
+        if any(x in from_email for x in ['mailer-daemon', 'postmaster', 'mail delivery']):
+            return {"intent": ResponseIntent.BOUNCE, "sentiment": "neutral",
+                    "urgency": "low", "key_points": ["bounce"], "confidence": 1.0}
 
-        Returns:
-            Dict with intent analysis
-        """
+        # Out of office
+        if any(x in subject + body for x in ['out of office', 'auto-reply', 'automatic reply', 'on vacation']):
+            return {"intent": ResponseIntent.OUT_OF_OFFICE, "sentiment": "neutral",
+                    "urgency": "low", "key_points": ["ooo"], "confidence": 0.95}
+
+        # Unsubscribe
+        if any(x in body for x in ['unsubscribe', 'remove me', 'opt out', 'stop emailing']):
+            return {"intent": ResponseIntent.UNSUBSCRIBE, "sentiment": "negative",
+                    "urgency": "high", "key_points": ["unsubscribe"], "confidence": 0.9}
+
+        # AI-powered analysis for everything else
         prompt = INTENT_ANALYSIS_PROMPT.format(**email_data)
+        result = self._call_ai("You are an email intent classifier. Respond in JSON only.", prompt, max_tokens=512)
 
-        try:
-            response = anthropic.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}]
-            )
+        if result:
+            try:
+                json_match = re.search(r'\{[\s\S]*\}', result)
+                if json_match:
+                    analysis = json.loads(json_match.group())
+                    logger.info(f"Analyzed {email_data['from_email']}: intent={analysis.get('intent')}")
+                    return analysis
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse AI intent response")
 
-            result_text = response.content[0].text
+        return {"intent": ResponseIntent.UNCLEAR, "sentiment": "neutral",
+                "urgency": "medium", "key_points": [], "confidence": 0.0}
 
-            # Parse JSON response
-            # Find JSON in response (handle markdown code blocks)
-            json_match = re.search(r'\{[\s\S]*\}', result_text)
-            if json_match:
-                analysis = json.loads(json_match.group())
-            else:
-                analysis = {
-                    "intent": ResponseIntent.UNCLEAR,
-                    "sentiment": "neutral",
-                    "urgency": "medium",
-                    "key_points": [],
-                    "suggested_action": "Manual review needed",
-                    "confidence": 0.5
-                }
+    def generate_reply(self, email_data: Dict, analysis: Dict) -> Optional[str]:
+        """Generate a reply based on intent analysis."""
+        intent = analysis.get('intent', '')
 
-            logger.info(f"Analyzed email from {email_data['from_email']}: intent={analysis['intent']}")
-            return analysis
-
-        except Exception as e:
-            logger.error(f"Error analyzing intent: {str(e)}")
-            return {
-                "intent": ResponseIntent.UNCLEAR,
-                "sentiment": "neutral",
-                "urgency": "medium",
-                "key_points": [],
-                "suggested_action": f"Error: {str(e)}",
-                "confidence": 0.0
-            }
-
-    def generate_reply(self, lead_data: Dict, email_data: Dict,
-                       analysis: Dict, previous_email: str = "") -> str:
-        """
-        Generate a personalized reply based on intent analysis
-
-        Args:
-            lead_data: Dict with lead info (first_name, last_name, company, email)
-            email_data: Dict with email info (subject, body)
-            analysis: Intent analysis from analyze_intent()
-            previous_email: Our previous email for context
-
-        Returns:
-            Generated reply text
-        """
-        # Handle special cases
-        if analysis['intent'] == ResponseIntent.OUT_OF_OFFICE:
-            logger.info("Out of office detected - skipping reply")
+        # Skip these — no reply needed
+        if intent in [ResponseIntent.OUT_OF_OFFICE, ResponseIntent.SPAM, ResponseIntent.BOUNCE]:
+            logger.info(f"Skipping reply for {intent}")
             return None
 
-        if analysis['intent'] == ResponseIntent.SPAM:
-            logger.info("Spam detected - skipping reply")
-            return None
+        # Unsubscribe — quick template, no AI needed
+        if intent == ResponseIntent.UNSUBSCRIBE:
+            name = email_data.get('from_name', '').split()[0] if email_data.get('from_name') else 'there'
+            return f"""Hi {name},
 
-        if analysis['intent'] == ResponseIntent.UNSUBSCRIBE:
-            return self._generate_unsubscribe_reply(lead_data)
+I've removed you from our mailing list. You won't receive any further emails from us.
 
-        # Generate personalized reply
-        prompt_data = {
-            **lead_data,
-            **email_data,
-            "intent": analysis['intent'],
-            "sentiment": analysis['sentiment'],
-            "key_points": ", ".join(analysis.get('key_points', [])),
-            "previous_email": previous_email or "(Initial outreach about Wedding Counselors Directory)"
-        }
+Apologies for the inconvenience.
 
-        prompt = REPLY_GENERATION_PROMPT.format(**prompt_data)
+Sarah, Wedding Counselors Directory"""
 
-        try:
-            response = anthropic.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}]
-            )
+        # AI-generated reply for everything else
+        prompt = REPLY_GENERATION_PROMPT.format(
+            intent=intent,
+            from_name=email_data.get('from_name', ''),
+            from_email=email_data.get('from_email', ''),
+            subject=email_data.get('subject', ''),
+            body=email_data.get('body', '')
+        )
 
-            reply = response.content[0].text.strip()
-
-            # Add meeting link if they're interested
-            if analysis['intent'] in [ResponseIntent.INTERESTED, ResponseIntent.MEETING_REQUEST]:
-                if CALENDLY_LINK and CALENDLY_LINK not in reply:
-                    reply += f"\n\nFeel free to book a time that works for you: {CALENDLY_LINK}"
-
-            logger.info(f"Generated reply for {lead_data['email']} (intent: {analysis['intent']})")
-            return reply
-
-        except Exception as e:
-            logger.error(f"Error generating reply: {str(e)}")
-            return None
-
-    def _generate_unsubscribe_reply(self, lead_data: Dict) -> str:
-        """Generate a polite unsubscribe confirmation"""
-        return f"""Hi {lead_data.get('first_name', 'there')},
-
-Thank you for letting us know. I've removed you from our mailing list and you won't receive any further emails from us.
-
-If you ever change your mind or have questions in the future, feel free to reach out.
-
-Best regards,
-Wedding Counselors Directory Team"""
-
-    def process_response(self, response_record, lead, sent_email=None) -> Tuple[str, Dict]:
-        """
-        Process a response record and generate appropriate reply
-
-        Args:
-            response_record: Response model instance
-            lead: Lead model instance
-            sent_email: Optional SentEmail model instance (our previous email)
-
-        Returns:
-            Tuple of (reply_text, analysis_dict)
-        """
-        # Prepare data
-        email_data = {
-            "from_name": lead.full_name,
-            "from_email": lead.email,
-            "company": lead.company or "Unknown",
-            "subject": response_record.subject or "",
-            "body": response_record.body or ""
-        }
-
-        lead_data = {
-            "first_name": lead.first_name or "there",
-            "last_name": lead.last_name or "",
-            "company": lead.company or "",
-            "email": lead.email
-        }
-
-        previous_email = ""
-        if sent_email:
-            previous_email = f"Subject: {sent_email.subject}\n\n{sent_email.body}"
-
-        # Analyze intent
-        analysis = self.analyze_intent(email_data)
-
-        # Generate reply
-        reply = self.generate_reply(lead_data, email_data, analysis, previous_email)
-
-        return reply, analysis
+        reply = self._call_ai(SYSTEM_PROMPT, prompt)
+        if reply:
+            logger.info(f"Generated reply for {email_data['from_email']} (intent: {intent})")
+        return reply
 
     def should_auto_send(self, analysis: Dict) -> bool:
-        """
-        Determine if reply should be auto-sent based on analysis
-
-        Returns True for most cases (full autopilot mode)
-        """
-        # Always auto-send unless confidence is very low
+        """Determine if reply should be auto-sent."""
         if analysis.get('confidence', 0) < 0.5:
             return False
-
-        # Skip spam and out of office
-        if analysis['intent'] in [ResponseIntent.SPAM, ResponseIntent.OUT_OF_OFFICE]:
+        if analysis.get('intent') in [ResponseIntent.SPAM, ResponseIntent.OUT_OF_OFFICE, ResponseIntent.BOUNCE]:
             return False
-
-        # Auto-send everything else
         return True
 
 
 class AutoReplyScheduler:
-    """Scheduler for automatic email replies"""
+    """Processes pending responses and sends AI replies."""
 
-    def __init__(self, app, db):
+    def __init__(self, app=None, db=None):
         self.app = app
         self.db = db
         self.responder = AIResponder()
 
     def process_pending_responses(self) -> int:
-        """
-        Process all unprocessed responses and send replies
-
-        Returns: Number of replies sent
-        """
+        """Process all unreviewed responses and send AI replies."""
         from models import Response, Lead, SentEmail, Inbox
         from email_handler import EmailSender
 
         replies_sent = 0
 
         with self.app.app_context():
-            # Get unprocessed responses (not reviewed yet)
             pending = Response.query.filter_by(reviewed=False).all()
+            logger.info(f"Found {len(pending)} unreviewed responses")
 
             for response in pending:
                 try:
                     lead = response.lead
-                    sent_email = response.sent_email
-
-                    # Skip if no lead
                     if not lead:
+                        response.reviewed = True
+                        self.db.session.commit()
                         continue
 
-                    # Process and generate reply
-                    reply_text, analysis = self.responder.process_response(
-                        response, lead, sent_email
-                    )
+                    # Build email data
+                    email_data = {
+                        "from_name": lead.full_name if hasattr(lead, 'full_name') else f"{lead.first_name or ''} {lead.last_name or ''}".strip(),
+                        "from_email": lead.email,
+                        "subject": response.subject or "",
+                        "body": response.body or ""
+                    }
 
-                    # Skip if no reply generated
+                    # Analyze intent
+                    analysis = self.responder.analyze_intent(email_data)
+                    intent = analysis.get('intent', 'unclear')
+
+                    # Generate reply
+                    reply_text = self.responder.generate_reply(email_data, analysis)
+
                     if not reply_text:
                         response.reviewed = True
-                        response.notes = f"AI analysis: {analysis['intent']} - No reply needed"
+                        response.notes = f"AI: {intent} — no reply needed"
                         self.db.session.commit()
                         continue
 
                     # Check if should auto-send
                     if not self.responder.should_auto_send(analysis):
-                        response.notes = f"AI draft (needs review): {reply_text[:200]}..."
+                        response.notes = f"AI draft (needs review, confidence={analysis.get('confidence', 0):.2f}): {reply_text[:200]}..."
                         self.db.session.commit()
                         logger.info(f"Reply queued for review: {lead.email}")
                         continue
 
-                    # Get inbox to send from (use same as original email or first active)
+                    # Get inbox to send from
+                    sent_email = response.sent_email
                     inbox = None
                     if sent_email and sent_email.inbox:
                         inbox = sent_email.inbox
@@ -361,18 +279,13 @@ class AutoReplyScheduler:
                         inbox = Inbox.query.filter_by(active=True).first()
 
                     if not inbox:
-                        logger.error("No active inbox found for sending reply")
+                        logger.error("No active inbox for sending reply")
                         continue
 
                     # Send the reply
                     sender = EmailSender(inbox)
-
-                    # Create reply subject
                     original_subject = response.subject or "Your inquiry"
-                    if not original_subject.lower().startswith("re:"):
-                        reply_subject = f"Re: {original_subject}"
-                    else:
-                        reply_subject = original_subject
+                    reply_subject = original_subject if original_subject.lower().startswith("re:") else f"Re: {original_subject}"
 
                     success, message_id, error = sender.send_email(
                         to_email=lead.email,
@@ -396,20 +309,23 @@ class AutoReplyScheduler:
 
                         # Mark response as reviewed
                         response.reviewed = True
-                        response.notes = f"AI auto-replied ({analysis['intent']})"
+                        response.notes = f"AI auto-replied ({intent})"
 
-                        # Update lead status based on intent
-                        if analysis['intent'] == ResponseIntent.MEETING_REQUEST:
+                        # Update lead status
+                        if intent == ResponseIntent.MEETING_REQUEST:
                             lead.status = 'meeting_booked'
-                        elif analysis['intent'] == ResponseIntent.NOT_INTERESTED:
+                        elif intent == ResponseIntent.NOT_INTERESTED:
                             lead.status = 'not_interested'
-                        elif analysis['intent'] == ResponseIntent.UNSUBSCRIBE:
+                        elif intent == ResponseIntent.UNSUBSCRIBE:
                             lead.status = 'not_interested'
 
                         self.db.session.commit()
                         replies_sent += 1
 
-                        logger.info(f"Auto-replied to {lead.email} (intent: {analysis['intent']})")
+                        logger.info(f"Auto-replied to {lead.email} (intent: {intent})")
+
+                        # Send Telegram notification about the auto-reply
+                        _notify_auto_reply(lead, intent, reply_text)
 
                     else:
                         logger.error(f"Failed to send reply to {lead.email}: {error}")
@@ -420,3 +336,47 @@ class AutoReplyScheduler:
                     continue
 
         return replies_sent
+
+
+def _notify_auto_reply(lead, intent, reply_text):
+    """Send a Telegram notification when an AI reply is sent."""
+    try:
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        if not token or not chat_id:
+            return
+
+        preview = reply_text[:200].replace('<', '&lt;').replace('>', '&gt;')
+        name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+
+        msg = (
+            f"<b>AI Auto-Reply Sent</b>\n\n"
+            f"<b>To:</b> {name} ({lead.email})\n"
+            f"<b>Intent:</b> {intent}\n\n"
+            f"<b>Reply preview:</b>\n{preview}..."
+        )
+
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+            timeout=10
+        )
+    except Exception as e:
+        logger.warning(f"Telegram notify failed: {e}")
+
+
+def run_auto_replies():
+    """Standalone function to run auto-replies (for cron_runner)."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from app import app
+    from models import db
+
+    scheduler = AutoReplyScheduler(app=app, db=db)
+    count = scheduler.process_pending_responses()
+    logger.info(f"Auto-reply job complete: {count} replies sent")
+    return count
+
+
+if __name__ == "__main__":
+    run_auto_replies()

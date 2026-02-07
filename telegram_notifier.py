@@ -1,30 +1,25 @@
 #!/usr/bin/env python3
 """
-Telegram Email Notifier
-Polls IMAP inbox and sends notifications to Telegram when new emails arrive.
-More reliable than Spacemail's built-in forwarding.
+Telegram Notifier — Real-time campaign updates
 
-Setup:
-1. Create a Telegram bot via @BotFather, get the token
-2. Get your chat ID by messaging @userinfobot
-3. Set environment variables:
-   - TELEGRAM_BOT_TOKEN=your_bot_token
-   - TELEGRAM_CHAT_ID=your_chat_id
-4. Run: python telegram_notifier.py
+Sends Telegram notifications for:
+- New email replies (from DB responses, not IMAP UNSEEN)
+- AI auto-reply confirmations
+- Lead status alerts
+- Daily campaign summary
 
-Can also run as a cron job or GitHub Action.
+Uses database-tracked responses instead of IMAP UNSEEN status,
+so notifications work even if emails are read in the mail client first.
 """
 
 import os
 import sys
 import time
-import imaplib
-import email
-from email.header import decode_header
-from datetime import datetime
-import requests
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
+
+import requests
 
 # Setup logging
 logging.basicConfig(
@@ -44,11 +39,10 @@ load_dotenv()
 # Configuration
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
-SEEN_EMAILS_FILE = Path(script_dir) / '.seen_emails'
+NOTIFIED_FILE = Path(script_dir) / '.notified_responses'
 
-# IMAP config from app
 from app import app
-from models import Inbox
+from models import db, Inbox, Response, Lead, CampaignLead, Campaign, SentEmail
 
 
 def send_telegram_message(message: str) -> bool:
@@ -77,207 +71,120 @@ def send_telegram_message(message: str) -> bool:
         return False
 
 
-def decode_mime_header(header):
-    """Decode MIME encoded header."""
-    if not header:
-        return ""
-    decoded_parts = decode_header(header)
-    result = []
-    for part, encoding in decoded_parts:
-        if isinstance(part, bytes):
-            result.append(part.decode(encoding or 'utf-8', errors='ignore'))
-        else:
-            result.append(part)
-    return ''.join(result)
-
-
-def get_email_body(msg):
-    """Extract plain text body from email."""
-    body = ""
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == 'text/plain':
-                try:
-                    body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                    break
-                except:
-                    pass
-    else:
-        try:
-            body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-        except:
-            body = str(msg.get_payload())
-    return body.strip()[:500]  # Limit to 500 chars
-
-
-def load_seen_emails():
-    """Load set of seen email message IDs."""
-    if SEEN_EMAILS_FILE.exists():
-        return set(SEEN_EMAILS_FILE.read_text().strip().split('\n'))
+def load_notified_ids():
+    """Load set of already-notified response IDs."""
+    if NOTIFIED_FILE.exists():
+        content = NOTIFIED_FILE.read_text().strip()
+        if content:
+            return set(content.split('\n'))
     return set()
 
 
-def save_seen_email(message_id: str):
-    """Add message ID to seen emails."""
-    seen = load_seen_emails()
-    seen.add(message_id)
-    # Keep only last 1000 to prevent file bloat
-    if len(seen) > 1000:
-        seen = set(list(seen)[-1000:])
-    SEEN_EMAILS_FILE.write_text('\n'.join(seen))
+def save_notified_id(response_id: str):
+    """Add response ID to notified set."""
+    notified = load_notified_ids()
+    notified.add(str(response_id))
+    # Keep only last 500 to prevent bloat
+    if len(notified) > 500:
+        notified = set(list(notified)[-500:])
+    NOTIFIED_FILE.write_text('\n'.join(notified))
 
 
-def check_inbox_for_new_emails():
-    """Check IMAP inbox for new emails and notify via Telegram."""
+def check_new_responses():
+    """Check DB for new responses and notify via Telegram."""
     with app.app_context():
-        inboxes = Inbox.query.filter_by(active=True).all()
+        notified = load_notified_ids()
 
-        for inbox in inboxes:
-            logger.info(f"Checking inbox: {inbox.email}")
+        # Get all responses, check which haven't been notified
+        responses = Response.query.order_by(Response.received_at.desc()).limit(50).all()
+        new_count = 0
 
-            try:
-                # Connect to IMAP
-                if inbox.imap_use_ssl:
-                    mail = imaplib.IMAP4_SSL(inbox.imap_host, inbox.imap_port, timeout=30)
-                else:
-                    mail = imaplib.IMAP4(inbox.imap_host, inbox.imap_port, timeout=30)
+        for resp in responses:
+            if str(resp.id) in notified:
+                continue
 
-                mail.login(inbox.username, inbox.password)
-                mail.select('INBOX')
+            lead = resp.lead
+            if not lead:
+                save_notified_id(resp.id)
+                continue
 
-                # Search for all recent emails (last 24 hours would be SINCE)
-                # Using UNSEEN for unread
-                status, messages = mail.search(None, 'UNSEEN')
+            name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+            company = lead.company or ""
+            body_preview = (resp.body or "")[:300]
+            # Escape HTML special chars
+            body_preview = body_preview.replace('<', '&lt;').replace('>', '&gt;')
+            name = name.replace('<', '&lt;').replace('>', '&gt;')
 
-                if status != 'OK':
-                    logger.warning(f"No messages found in {inbox.email}")
-                    mail.logout()
-                    continue
+            # Determine status
+            status = "New reply"
+            if resp.reviewed and resp.notes and "AI auto-replied" in resp.notes:
+                status = "AI replied"
+            elif resp.reviewed:
+                status = "Reviewed"
 
-                message_ids = messages[0].split()
-                seen_emails = load_seen_emails()
+            notification = (
+                f"<b>New Reply!</b>\n\n"
+                f"<b>From:</b> {name}"
+                + (f" ({company})" if company else "") + "\n"
+                f"<b>Email:</b> {lead.email}\n"
+                f"<b>Subject:</b> {resp.subject or '(no subject)'}\n"
+                f"<b>Status:</b> {status}\n\n"
+                f"<b>Message:</b>\n{body_preview}"
+                + ("..." if len(resp.body or "") > 300 else "")
+            )
 
-                for msg_id in message_ids:
-                    try:
-                        # Fetch email
-                        status, msg_data = mail.fetch(msg_id, '(RFC822)')
-                        if status != 'OK':
-                            continue
+            if send_telegram_message(notification):
+                save_notified_id(resp.id)
+                new_count += 1
+                logger.info(f"Notified: reply from {lead.email}")
 
-                        # Parse email
-                        email_body = msg_data[0][1]
-                        msg = email.message_from_bytes(email_body)
-
-                        # Get unique identifier
-                        email_message_id = msg.get('Message-ID', str(msg_id))
-
-                        # Skip if already notified
-                        if email_message_id in seen_emails:
-                            continue
-
-                        # Extract details
-                        from_addr = decode_mime_header(msg.get('From', ''))
-                        subject = decode_mime_header(msg.get('Subject', '(No subject)'))
-                        body = get_email_body(msg)
-                        date_str = msg.get('Date', '')
-
-                        # Format Telegram message
-                        notification = f"""<b>New Email Reply!</b>
-
-<b>From:</b> {from_addr}
-<b>Subject:</b> {subject}
-<b>To:</b> {inbox.email}
-<b>Time:</b> {date_str}
-
-<b>Preview:</b>
-{body[:300]}{'...' if len(body) > 300 else ''}
-
----
-Reply in Spacemail or forward to handle."""
-
-                        # Send notification
-                        if send_telegram_message(notification):
-                            save_seen_email(email_message_id)
-                            logger.info(f"Notified about email from {from_addr}")
-
-                        # Don't mark as read - let the cron_runner handle that
-                        # mail.store(msg_id, '+FLAGS', '\\Seen')
-
-                    except Exception as e:
-                        logger.error(f"Error processing message {msg_id}: {e}")
-                        continue
-
-                mail.logout()
-
-            except Exception as e:
-                logger.error(f"Error checking inbox {inbox.email}: {e}")
+        if new_count > 0:
+            logger.info(f"Sent {new_count} new reply notifications")
+        else:
+            logger.info("No new responses to notify about")
 
 
 def check_lead_status():
     """Check lead counts and alert if running low."""
     with app.app_context():
-        from models import CampaignLead, Campaign, SentEmail
-
         campaigns = Campaign.query.filter_by(status='active').all()
 
         for campaign in campaigns:
-            # Count leads by status
-            active_leads = CampaignLead.query.filter_by(
-                campaign_id=campaign.id,
-                status='active'
+            active = CampaignLead.query.filter_by(
+                campaign_id=campaign.id, status='active'
+            ).count()
+            completed = CampaignLead.query.filter_by(
+                campaign_id=campaign.id, status='completed'
+            ).count()
+            stopped = CampaignLead.query.filter_by(
+                campaign_id=campaign.id, status='stopped'
             ).count()
 
-            completed_leads = CampaignLead.query.filter_by(
-                campaign_id=campaign.id,
-                status='completed'
-            ).count()
-
-            stopped_leads = CampaignLead.query.filter_by(
-                campaign_id=campaign.id,
-                status='stopped'
-            ).count()
-
-            total_leads = active_leads + completed_leads + stopped_leads
-
-            # Count emails sent today
-            from datetime import datetime, timedelta
-            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0)
-            emails_today = SentEmail.query.filter(
-                SentEmail.campaign_id == campaign.id,
-                SentEmail.sent_at >= today_start
-            ).count()
-
-            # Alert thresholds
-            if active_leads == 0:
+            if active == 0:
                 send_telegram_message(
-                    f"🚨 <b>OUT OF LEADS!</b>\n\n"
+                    f"<b>OUT OF LEADS</b>\n\n"
                     f"Campaign: {campaign.name}\n"
                     f"Active leads: 0\n"
-                    f"Completed: {completed_leads}\n"
-                    f"Stopped (replied): {stopped_leads}\n\n"
+                    f"Completed: {completed}\n"
+                    f"Replied/stopped: {stopped}\n\n"
                     f"Add more leads to continue outreach."
                 )
-            elif active_leads <= 50:
+            elif active <= 50:
                 send_telegram_message(
-                    f"⚠️ <b>Low Leads Warning</b>\n\n"
+                    f"<b>Low Leads Warning</b>\n\n"
                     f"Campaign: {campaign.name}\n"
-                    f"Active leads remaining: {active_leads}\n"
-                    f"Completed: {completed_leads}\n"
-                    f"Stopped (replied): {stopped_leads}\n\n"
-                    f"Consider adding more leads soon."
+                    f"Active leads remaining: {active}\n"
+                    f"Completed: {completed}\n"
+                    f"Replied/stopped: {stopped}"
                 )
 
-            logger.info(f"Campaign '{campaign.name}': {active_leads} active, {completed_leads} completed, {stopped_leads} stopped")
+            logger.info(f"Campaign '{campaign.name}': {active} active, {completed} completed, {stopped} stopped")
 
 
 def send_daily_summary():
-    """Send daily campaign summary."""
+    """Send daily campaign summary with all key stats."""
     with app.app_context():
-        from models import CampaignLead, Campaign, SentEmail, Response
-        from datetime import datetime, timedelta
-
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0)
-
         campaigns = Campaign.query.filter_by(status='active').all()
 
         for campaign in campaigns:
@@ -295,53 +202,44 @@ def send_daily_summary():
                 SentEmail.campaign_id == campaign.id
             ).count()
 
+            # Count AI auto-replies
+            ai_replied = Response.query.filter(
+                Response.notes.like('%AI auto-replied%')
+            ).count()
+
             reply_rate = (total_responses / total_sent * 100) if total_sent > 0 else 0
 
             send_telegram_message(
-                f"📊 <b>Daily Summary</b>\n\n"
+                f"<b>Daily Summary</b>\n\n"
                 f"<b>{campaign.name}</b>\n"
-                f"━━━━━━━━━━━━━━━\n"
+                f"{'='*20}\n"
                 f"Emails sent today: {emails_today}\n"
                 f"Total sent: {total_sent}\n"
                 f"Replies: {total_responses} ({reply_rate:.1f}%)\n"
-                f"━━━━━━━━━━━━━━━\n"
+                f"AI auto-replied: {ai_replied}\n"
+                f"{'='*20}\n"
                 f"Active leads: {active}\n"
                 f"Completed: {completed}\n"
-                f"Stopped: {stopped}"
+                f"Replied/stopped: {stopped}"
             )
-
-
-def run_daemon(interval_seconds=60):
-    """Run as a daemon, checking every N seconds."""
-    logger.info(f"Starting Telegram notifier daemon (interval: {interval_seconds}s)")
-
-    while True:
-        try:
-            check_inbox_for_new_emails()
-        except Exception as e:
-            logger.error(f"Error in check loop: {e}")
-
-        time.sleep(interval_seconds)
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Telegram Email Notifier')
-    parser.add_argument('--daemon', action='store_true', help='Run as daemon (continuous)')
-    parser.add_argument('--interval', type=int, default=60, help='Check interval in seconds (default: 60)')
-    parser.add_argument('--once', action='store_true', help='Check emails once and exit')
-    parser.add_argument('--test', action='store_true', help='Send a test notification')
-    parser.add_argument('--leads', action='store_true', help='Check lead status and alert if low')
-    parser.add_argument('--summary', action='store_true', help='Send daily campaign summary')
-    parser.add_argument('--all', action='store_true', help='Run all checks (emails + leads)')
+    parser = argparse.ArgumentParser(description='Telegram Notifier')
+    parser.add_argument('--once', action='store_true', help='Check new responses once')
+    parser.add_argument('--test', action='store_true', help='Send test notification')
+    parser.add_argument('--leads', action='store_true', help='Check lead status')
+    parser.add_argument('--summary', action='store_true', help='Send daily summary')
+    parser.add_argument('--all', action='store_true', help='Run all checks')
 
     args = parser.parse_args()
 
     if args.test:
-        if send_telegram_message("✅ <b>Test notification</b>\n\nWedding Counselors CRM notifications are working!"):
-            print("Test notification sent successfully!")
+        if send_telegram_message("<b>Test notification</b>\n\nWedding Counselors notifications are working."):
+            print("Test notification sent.")
         else:
-            print("Failed to send test notification. Check your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+            print("Failed to send. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
         sys.exit(0)
 
     if args.summary:
@@ -349,15 +247,13 @@ if __name__ == "__main__":
         print("Daily summary sent.")
         sys.exit(0)
 
-    if args.daemon:
-        run_daemon(args.interval)
-    elif args.all:
-        check_inbox_for_new_emails()
+    if args.all:
+        check_new_responses()
         check_lead_status()
         print("All checks complete.")
     elif args.leads:
         check_lead_status()
         print("Lead status check complete.")
     else:
-        check_inbox_for_new_emails()
-        print("Email check complete.")
+        check_new_responses()
+        print("Response check complete.")

@@ -41,3 +41,5 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+.notified_responses
+pending_replies.json

@@ -504,7 +504,7 @@ class EmailScheduler:
 
         return response_count
 
-    def _auto_label_response(self, resp: dict) -> str | None:
+    def _auto_label_response(self, resp: dict) -> 'str | None':
         """Apply a simple label based on common keywords."""
         subject = (resp.get('subject') or '').lower()
         body = (resp.get('body') or '').lower()

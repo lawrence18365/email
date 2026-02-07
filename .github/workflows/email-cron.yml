@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Send scheduled emails
+      - name: Send emails and check responses
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
@@ -36,7 +36,19 @@ jobs:
         run: |
           python cron_runner.py --all
 
-      - name: Check for replies and notify
+      - name: AI auto-reply to new responses
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AI_MODEL: "moonshotai/kimi-k2.5"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python ai_responder.py
+
+      - name: Notify via Telegram
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
