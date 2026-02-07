@@ -96,7 +96,7 @@ class AIResponder:
         if not OPENROUTER_API_KEY:
             logger.warning("OPENROUTER_API_KEY not set — AI responder will not function")
 
-    def _call_ai(self, system: str, user: str, max_tokens: int = 4096) -> Optional[str]:
+    def _call_ai(self, system: str, user: str, max_tokens: int = 1024) -> Optional[str]:
         """Make an API call to OpenRouter."""
         if not OPENROUTER_API_KEY:
             logger.error("No OPENROUTER_API_KEY configured")
