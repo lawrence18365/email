@@ -80,7 +80,12 @@ Subject: {subject}
 Their message:
 {body}
 
-Follow the context document rules exactly. Output ONLY the plain email body text — no subject line, no JSON, no markdown."""
+IMPORTANT RULES:
+- Follow the context document rules exactly
+- For interested, question, conditional, and meeting_request intents: ALWAYS include the signup link (https://www.weddingcounselors.com/professional/signup) as a clear call-to-action
+- For not_interested and unsubscribe: do NOT include the signup link
+- Write at a Fortune 500 level — polished, professional, concise. No fluff
+- Output ONLY the plain email body text — no subject line, no JSON, no markdown"""
 
 
 class AIResponder:
