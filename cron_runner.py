@@ -193,12 +193,13 @@ def send_scheduled_emails():
 
 
 def check_responses():
-    """Check for email responses"""
+    """Check for email responses and record new ones in the DB."""
     logger.info("Starting response check job...")
+    import re
 
     with app.app_context():
-        # Get active inboxes
         inboxes = Inbox.query.filter_by(active=True).all()
+        new_responses = 0
 
         for inbox in inboxes:
             try:
@@ -206,62 +207,102 @@ def check_responses():
                 responses = receiver.fetch_new_responses()
 
                 for resp_data in responses:
-                    # Try to match to a sent email
                     in_reply_to = resp_data.get('in_reply_to')
                     sent_email = None
                     lead = None
 
+                    # --- Match via In-Reply-To header ---
                     if in_reply_to:
+                        # Try as-is (stripped of angle brackets by email_handler)
                         sent_email = SentEmail.query.filter_by(message_id=in_reply_to).first()
+                        # Try with angle brackets (message_ids are stored with brackets)
+                        if not sent_email:
+                            sent_email = SentEmail.query.filter_by(message_id=f'<{in_reply_to}>').first()
                         if sent_email:
                             lead = sent_email.lead
 
-                    if not lead:
-                        # Try to find lead by sender email
-                        from_field = resp_data.get('from', '')
-                        # Extract email from "Name <email>" format
-                        import re
-                        email_match = re.search(r'[\w\.-]+@[\w\.-]+', from_field)
-                        if email_match:
-                            from_email = email_match.group(0)
-                            lead = Lead.query.filter_by(email=from_email).first()
+                    # --- Fallback: match by sender email address ---
+                    from_field = resp_data.get('from', '')
+                    email_match = re.search(r'[\w\.-]+@[\w\.-]+', from_field)
+                    from_email = email_match.group(0) if email_match else None
 
-                    if lead:
-                        # Check for duplicate
-                        existing = Response.query.filter_by(message_id=resp_data.get('message_id')).first()
+                    if not lead and from_email:
+                        lead = Lead.query.filter_by(email=from_email).first()
+
+                    # Skip emails from ourselves or unknown senders
+                    if not lead:
+                        continue
+
+                    # --- Duplicate check ---
+                    msg_id = resp_data.get('message_id')
+                    if msg_id:
+                        existing = Response.query.filter_by(message_id=msg_id).first()
                         if existing:
                             continue
 
-                        # Create response record
-                        response = Response(
-                            lead_id=lead.id,
-                            sent_email_id=sent_email.id if sent_email else None,
-                            message_id=resp_data.get('message_id'),
-                            in_reply_to=in_reply_to,
-                            subject=resp_data.get('subject'),
-                            body=resp_data.get('body'),
-                            reviewed=False
-                        )
-                        db.session.add(response)
+                    # --- Create new response record ---
+                    response = Response(
+                        lead_id=lead.id,
+                        sent_email_id=sent_email.id if sent_email else None,
+                        message_id=msg_id,
+                        in_reply_to=in_reply_to,
+                        subject=resp_data.get('subject'),
+                        body=resp_data.get('body'),
+                        reviewed=False
+                    )
+                    db.session.add(response)
 
-                        # Update lead status
-                        lead.status = 'responded'
+                    lead.status = 'responded'
 
-                        # Stop campaign for this lead
-                        campaign_leads = CampaignLead.query.filter_by(
-                            lead_id=lead.id,
-                            status='active'
-                        ).all()
-                        for cl in campaign_leads:
-                            cl.status = 'stopped'
+                    # Stop active campaigns for this lead
+                    campaign_leads = CampaignLead.query.filter_by(
+                        lead_id=lead.id,
+                        status='active'
+                    ).all()
+                    for cl in campaign_leads:
+                        cl.status = 'stopped'
 
-                        db.session.commit()
-                        logger.info(f"Recorded response from {lead.email}")
+                    db.session.commit()
+                    new_responses += 1
+                    logger.info(f"NEW RESPONSE from {lead.email} (lead {lead.id}): {resp_data.get('subject', '')[:60]}")
+
+                    # --- Telegram alert for new response ---
+                    _notify_new_response(lead, resp_data)
 
             except Exception as e:
                 logger.error(f"Error checking inbox {inbox.email}: {e}")
 
-    logger.info("Response check job completed")
+    logger.info(f"Response check job completed: {new_responses} new response(s) recorded")
+
+
+def _notify_new_response(lead, resp_data):
+    """Send Telegram notification when a new response is detected."""
+    try:
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        if not token or not chat_id:
+            return
+
+        import requests
+        name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+        body_preview = (resp_data.get('body', '') or '')[:200]
+        body_preview = body_preview.replace('<', '&lt;').replace('>', '&gt;')
+
+        msg = (
+            f"<b>New Response Received</b>\n\n"
+            f"<b>From:</b> {name} ({lead.email})\n"
+            f"<b>Subject:</b> {resp_data.get('subject', 'N/A')}\n\n"
+            f"<i>{body_preview}</i>\n\n"
+            f"AI auto-reply will process this shortly."
+        )
+
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+            timeout=10
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send Telegram notification: {e}")
 
 
 if __name__ == "__main__":

@@ -64,6 +64,8 @@ class EmailSender:
         self.smtp_host = inbox.smtp_host
         self.smtp_port = inbox.smtp_port
         self.smtp_use_tls = inbox.smtp_use_tls
+        self.imap_host = inbox.imap_host
+        self.imap_port = inbox.imap_port
         self.username = inbox.username
         self.password = inbox.password
         self.from_email = inbox.email
@@ -75,7 +77,9 @@ class EmailSender:
         subject: str,
         body_html: str,
         body_plain: Optional[str] = None,
-        bcc: Optional[str] = None
+        bcc: Optional[str] = None,
+        in_reply_to: Optional[str] = None,
+        references: Optional[str] = None
     ) -> tuple[bool, Optional[str], Optional[str]]:
         """
         Send an email via SMTP
@@ -93,6 +97,12 @@ class EmailSender:
             # Generate unique Message-ID
             message_id = make_msgid(domain=self.from_email.split('@')[1])
             msg['Message-ID'] = message_id
+
+            # Threading headers for reply-in-thread
+            if in_reply_to:
+                msg['In-Reply-To'] = in_reply_to
+            if references:
+                msg['References'] = references
 
             # Add plain text version (if not provided, strip HTML)
             if body_plain is None:
@@ -117,6 +127,12 @@ class EmailSender:
             server.sendmail(self.from_email, recipients, msg.as_string())
             server.quit()
 
+            # Save copy to Sent folder via IMAP
+            try:
+                self._save_to_sent_folder(msg)
+            except Exception as e:
+                logger.warning(f"Could not save to Sent folder: {e}")
+
             logger.info(f"Email sent successfully to {to_email} with Message-ID: {message_id}")
             return True, message_id, None
 
@@ -134,6 +150,37 @@ class EmailSender:
             error_msg = f"Unexpected error: {str(e)}"
             logger.error(error_msg)
             return False, None, error_msg
+
+    def _save_to_sent_folder(self, msg):
+        """Save a copy of the sent email to IMAP Sent folder"""
+        import imaplib
+        import time
+
+        try:
+            mail = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
+            mail.login(self.username, self.password)
+
+            # Try common sent folder names
+            sent_folders = ['Sent', '[Gmail]/Sent Mail', 'INBOX.Sent', 'Sent Items', 'Sent Mail']
+            for folder in sent_folders:
+                try:
+                    status, _ = mail.select(folder)
+                    if status == 'OK':
+                        # Append message to Sent folder
+                        mail.append(folder, '\\Seen', imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+                        logger.info(f"Saved copy to Sent folder: {folder}")
+                        mail.logout()
+                        return True
+                except:
+                    continue
+
+            mail.logout()
+            logger.warning("Could not find Sent folder to save copy")
+            return False
+
+        except Exception as e:
+            logger.warning(f"Failed to save to Sent folder: {e}")
+            return False
 
     def _html_to_plain(self, html: str) -> str:
         """Convert HTML to plain text (basic)"""

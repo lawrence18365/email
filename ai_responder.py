@@ -306,15 +306,31 @@ class AutoReplyScheduler:
                         self.db.session.commit()
                         continue
 
-                    # Send the reply
+                    # Send the reply (threaded into existing conversation)
                     sender = EmailSender(inbox)
                     original_subject = response.subject or "Your inquiry"
                     reply_subject = original_subject if original_subject.lower().startswith("re:") else f"Re: {original_subject}"
 
+                    # Build threading headers so reply appears in same thread
+                    reply_to_id = None
+                    ref_chain = None
+                    if response.message_id:
+                        reply_to_id = response.message_id
+                        if not reply_to_id.startswith('<'):
+                            reply_to_id = f'<{reply_to_id}>'
+                    if sent_email and sent_email.message_id:
+                        ref_chain = sent_email.message_id
+                        if reply_to_id and reply_to_id != ref_chain:
+                            ref_chain = f'{ref_chain} {reply_to_id}'
+                    elif reply_to_id:
+                        ref_chain = reply_to_id
+
                     success, message_id, error = sender.send_email(
                         to_email=lead.email,
                         subject=reply_subject,
-                        body_html=reply_text.replace('\n', '<br>')
+                        body_html=reply_text.replace('\n', '<br>'),
+                        in_reply_to=reply_to_id,
+                        references=ref_chain
                     )
 
                     if success:
