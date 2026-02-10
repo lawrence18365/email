@@ -102,8 +102,8 @@ class AIResponder:
     def __init__(self, db_session=None):
         self.db = db_session
         self._last_error = None  # Tracks API failures vs intentional skips
-        if not GEMINI_API_KEY:
-            logger.warning("GEMINI_API_KEY not set — AI responder will not function")
+        if not OPENROUTER_API_KEY:
+            logger.warning("OPENROUTER_API_KEY not set — AI responder will not function")
 
     def _call_ai(self, system: str, user: str, max_tokens: int = 1024) -> Optional[str]:
         """Make an API call to OpenRouter (OpenAI-compatible) with retry for rate limits."""
