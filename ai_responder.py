@@ -134,6 +134,7 @@ class AIResponder:
                     data = resp.json()
                     content = data['candidates'][0]['content']['parts'][0]['text']
                     if content:
+                        self._last_error = None
                         return content.strip()
                     logger.warning("Gemini returned empty content")
                     return None
@@ -260,6 +261,8 @@ class AutoReplyScheduler:
 
             for response in pending:
                 try:
+                    self.responder._last_error = None  # Reset for each response
+
                     lead = response.lead
                     if not lead:
                         response.reviewed = True
