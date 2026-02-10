@@ -101,44 +101,62 @@ class AIResponder:
 
     def __init__(self, db_session=None):
         self.db = db_session
+        self._last_error = None  # Tracks API failures vs intentional skips
         if not GEMINI_API_KEY:
             logger.warning("GEMINI_API_KEY not set — AI responder will not function")
 
     def _call_ai(self, system: str, user: str, max_tokens: int = 1024) -> Optional[str]:
-        """Make an API call to Google Gemini."""
+        """Make an API call to Google Gemini with retry for rate limits."""
         if not GEMINI_API_KEY:
             logger.error("No GEMINI_API_KEY configured")
             return None
 
-        try:
-            resp = requests.post(
-                f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "systemInstruction": {"parts": [{"text": system}]},
-                    "contents": [{"role": "user", "parts": [{"text": user}]}],
-                    "generationConfig": {
-                        "maxOutputTokens": max_tokens,
-                        "temperature": 0.7
-                    }
-                },
-                timeout=120
-            )
+        import time
+        max_retries = 3
 
-            if resp.status_code == 200:
-                data = resp.json()
-                content = data['candidates'][0]['content']['parts'][0]['text']
-                if content:
-                    return content.strip()
-                logger.warning("Gemini returned empty content")
-                return None
-            else:
-                logger.error(f"Gemini API error: {resp.status_code} — {resp.text[:200]}")
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(
+                    f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "systemInstruction": {"parts": [{"text": system}]},
+                        "contents": [{"role": "user", "parts": [{"text": user}]}],
+                        "generationConfig": {
+                            "maxOutputTokens": max_tokens,
+                            "temperature": 0.7
+                        }
+                    },
+                    timeout=120
+                )
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data['candidates'][0]['content']['parts'][0]['text']
+                    if content:
+                        return content.strip()
+                    logger.warning("Gemini returned empty content")
+                    return None
+                elif resp.status_code == 429:
+                    wait = (attempt + 1) * 30  # 30s, 60s, 90s
+                    logger.warning(f"Gemini rate limit (429), retry {attempt+1}/{max_retries} in {wait}s")
+                    if attempt < max_retries - 1:
+                        time.sleep(wait)
+                        continue
+                    logger.error(f"Gemini rate limit exhausted after {max_retries} retries")
+                    self._last_error = "rate_limit"
+                    return None
+                else:
+                    logger.error(f"Gemini API error: {resp.status_code} — {resp.text[:200]}")
+                    self._last_error = f"api_error_{resp.status_code}"
+                    return None
+
+            except Exception as e:
+                logger.error(f"AI call failed: {e}")
+                self._last_error = "exception"
                 return None
 
-        except Exception as e:
-            logger.error(f"AI call failed: {e}")
-            return None
+        return None
 
     def analyze_intent(self, email_data: Dict) -> Dict:
         """Analyze the intent of an incoming email."""
@@ -264,6 +282,15 @@ class AutoReplyScheduler:
                     reply_text = self.responder.generate_reply(email_data, analysis)
 
                     if not reply_text:
+                        # Only mark reviewed if this was an intentional skip (OOO/spam/bounce),
+                        # NOT if the API failed (rate limit, error). Check if the AI
+                        # actually decided to skip vs couldn't respond.
+                        was_api_failure = getattr(self.responder, '_last_error', None)
+                        if was_api_failure:
+                            logger.warning(f"Skipping {lead.email} — API failure ({was_api_failure}), will retry next run")
+                            self.responder._last_error = None
+                            continue
+
                         response.reviewed = True
                         response.notified = True
                         response.notes = f"AI: {intent} — no reply needed"
