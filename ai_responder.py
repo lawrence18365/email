@@ -139,11 +139,27 @@ class AIResponder:
 
                 if resp.status_code == 200:
                     data = resp.json()
-                    content = data['choices'][0]['message']['content']
+                    # Handle both standard and edge-case response formats
+                    content = None
+                    if 'choices' in data and data['choices']:
+                        msg = data['choices'][0].get('message') or {}
+                        content = msg.get('content')
+                    elif 'error' in data:
+                        logger.error(f"OpenRouter returned error in 200: {data['error']}")
+                        self._last_error = "api_error_in_200"
+                        if attempt < max_retries - 1:
+                            time.sleep((attempt + 1) * 10)
+                            continue
+                        return None
+
                     if content:
                         self._last_error = None
                         return content.strip()
-                    logger.warning("OpenRouter returned empty content")
+                    logger.warning(f"OpenRouter returned empty/unexpected response: {str(data)[:200]}")
+                    self._last_error = "empty_response"
+                    if attempt < max_retries - 1:
+                        time.sleep((attempt + 1) * 10)
+                        continue
                     return None
                 elif resp.status_code == 429:
                     wait = (attempt + 1) * 30
