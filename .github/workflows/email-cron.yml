@@ -43,8 +43,8 @@ jobs:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          AI_MODEL: "gemini-2.5-flash"
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AI_MODEL: "openrouter/pony-alpha"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NOTIFICATION_BCC_EMAIL: ${{ secrets.NOTIFICATION_BCC_EMAIL }}

@@ -1,5 +1,5 @@
 """
-AI Email Responder — Google Gemini Powered
+AI Email Responder — OpenRouter Pony Alpha Powered
 
 Reads incoming emails, understands intent, drafts personalized replies,
 and sends them automatically. Uses AI_REPLY_CONTEXT.md as the single
@@ -25,10 +25,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration — Google Gemini API (free tier)
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-GEMINI_MODEL = os.getenv('AI_MODEL', 'gemini-2.5-flash')
-GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+# Configuration — OpenRouter API (free tier via Pony Alpha)
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
+AI_MODEL = os.getenv('AI_MODEL', 'openrouter/pony-alpha')
+OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 # Load context document
 CONTEXT_DOC_PATH = Path(__file__).parent / 'AI_REPLY_CONTEXT.md'
@@ -106,9 +106,10 @@ class AIResponder:
             logger.warning("GEMINI_API_KEY not set — AI responder will not function")
 
     def _call_ai(self, system: str, user: str, max_tokens: int = 1024) -> Optional[str]:
-        """Make an API call to Google Gemini with retry for rate limits."""
-        if not GEMINI_API_KEY:
-            logger.error("No GEMINI_API_KEY configured")
+        """Make an API call to OpenRouter (OpenAI-compatible) with retry for rate limits."""
+        if not OPENROUTER_API_KEY:
+            logger.error("No OPENROUTER_API_KEY configured")
+            self._last_error = "no_api_key"
             return None
 
         import time
@@ -117,38 +118,44 @@ class AIResponder:
         for attempt in range(max_retries):
             try:
                 resp = requests.post(
-                    f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
-                    headers={"Content-Type": "application/json"},
+                    OPENROUTER_ENDPOINT,
+                    headers={
+                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://www.weddingcounselors.com",
+                        "X-Title": "Wedding Counselors CRM"
+                    },
                     json={
-                        "systemInstruction": {"parts": [{"text": system}]},
-                        "contents": [{"role": "user", "parts": [{"text": user}]}],
-                        "generationConfig": {
-                            "maxOutputTokens": max_tokens,
-                            "temperature": 0.7
-                        }
+                        "model": AI_MODEL,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user}
+                        ],
+                        "max_tokens": max_tokens,
+                        "temperature": 0.7
                     },
                     timeout=120
                 )
 
                 if resp.status_code == 200:
                     data = resp.json()
-                    content = data['candidates'][0]['content']['parts'][0]['text']
+                    content = data['choices'][0]['message']['content']
                     if content:
                         self._last_error = None
                         return content.strip()
-                    logger.warning("Gemini returned empty content")
+                    logger.warning("OpenRouter returned empty content")
                     return None
                 elif resp.status_code == 429:
-                    wait = (attempt + 1) * 30  # 30s, 60s, 90s
-                    logger.warning(f"Gemini rate limit (429), retry {attempt+1}/{max_retries} in {wait}s")
+                    wait = (attempt + 1) * 30
+                    logger.warning(f"OpenRouter rate limit (429), retry {attempt+1}/{max_retries} in {wait}s")
                     if attempt < max_retries - 1:
                         time.sleep(wait)
                         continue
-                    logger.error(f"Gemini rate limit exhausted after {max_retries} retries")
+                    logger.error(f"OpenRouter rate limit exhausted after {max_retries} retries")
                     self._last_error = "rate_limit"
                     return None
                 else:
-                    logger.error(f"Gemini API error: {resp.status_code} — {resp.text[:200]}")
+                    logger.error(f"OpenRouter API error: {resp.status_code} — {resp.text[:200]}")
                     self._last_error = f"api_error_{resp.status_code}"
                     return None
 
