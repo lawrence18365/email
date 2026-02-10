@@ -69,6 +69,14 @@ Email body:
 ---
 Classify as ONE of: interested, meeting_request, question, not_interested, unsubscribe, out_of_office, spam, bounce, unclear
 
+IMPORTANT classification rules:
+- If someone has signed up, is using the platform, reports a bug, gives feedback, or makes a suggestion → "interested" (they are an ACTIVE user)
+- If someone says they'll do it later, "this week", or "soon" → "interested"
+- If someone reports frustration with signup, a form, or a technical issue → "question" (they need help)
+- If someone asks about cost, pricing, or what's included → "question"
+- Only use "unclear" if you genuinely cannot determine ANY intent from the message
+- Confidence should be 0.8+ for any message where the person is clearly engaged
+
 Respond in JSON only:
 {{"intent": "category", "sentiment": "positive/neutral/negative", "urgency": "high/medium/low", "key_points": ["point1"], "confidence": 0.0-1.0}}"""
 
@@ -206,11 +214,10 @@ Sarah, Wedding Counselors Directory"""
         return reply
 
     def should_auto_send(self, analysis: Dict) -> bool:
-        """Determine if reply should be auto-sent."""
-        if analysis.get('confidence', 0) < 0.5:
-            return False
-        if analysis.get('intent') in [ResponseIntent.SPAM, ResponseIntent.OUT_OF_OFFICE, ResponseIntent.BOUNCE]:
-            return False
+        """Determine if reply should be auto-sent.
+        Always returns True when a reply was generated — never ghost a real person.
+        Spam/OOO/bounce are already filtered out in generate_reply() (returns None).
+        """
         return True
 
 
@@ -261,14 +268,6 @@ class AutoReplyScheduler:
                         response.notified = True
                         response.notes = f"AI: {intent} — no reply needed"
                         self.db.session.commit()
-                        continue
-
-                    # Check if should auto-send
-                    if not self.responder.should_auto_send(analysis):
-                        response.notified = True
-                        response.notes = f"AI draft (needs review, confidence={analysis.get('confidence', 0):.2f}): {reply_text[:200]}..."
-                        self.db.session.commit()
-                        logger.info(f"Reply queued for review: {lead.email}")
                         continue
 
                     # Get inbox and campaign context
@@ -325,10 +324,14 @@ class AutoReplyScheduler:
                     elif reply_to_id:
                         ref_chain = reply_to_id
 
+                    # BCC owner so they can see AI replies in their inbox
+                    bcc_email = os.getenv('NOTIFICATION_BCC_EMAIL')
+
                     success, message_id, error = sender.send_email(
                         to_email=lead.email,
                         subject=reply_subject,
                         body_html=reply_text.replace('\n', '<br>'),
+                        bcc=bcc_email,
                         in_reply_to=reply_to_id,
                         references=ref_chain
                     )
@@ -366,10 +369,16 @@ class AutoReplyScheduler:
                         logger.info(f"Auto-replied to {lead.email} (intent: {intent})")
 
                         # Send Telegram notification about the auto-reply
-                        _notify_auto_reply(lead, intent, reply_text)
+                        confidence = analysis.get('confidence', 0)
+                        _notify_auto_reply(lead, intent, reply_text, confidence)
 
                     else:
                         logger.error(f"Failed to send reply to {lead.email}: {error}")
+                        response.reviewed = True
+                        response.notified = True
+                        response.notes = f"AI: {intent} — send FAILED: {error}"
+                        self.db.session.commit()
+                        _notify_failure(lead, f"Send failed to {lead.email}: {error}")
 
                 except Exception as e:
                     logger.error(f"Error processing response {response.id}: {str(e)}")
@@ -380,7 +389,7 @@ class AutoReplyScheduler:
         return replies_sent
 
 
-def _notify_auto_reply(lead, intent, reply_text):
+def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
     """Send a Telegram notification when an AI reply is sent."""
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -388,14 +397,19 @@ def _notify_auto_reply(lead, intent, reply_text):
         if not token or not chat_id:
             return
 
-        preview = reply_text[:200].replace('<', '&lt;').replace('>', '&gt;')
+        # Show full reply text (Telegram supports up to 4096 chars)
+        full_reply = reply_text[:3500].replace('<', '&lt;').replace('>', '&gt;')
         name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
 
+        confidence_tag = ""
+        if confidence < 0.7:
+            confidence_tag = f"\n<b>LOW CONFIDENCE ({confidence:.0%}) — please verify</b>"
+
         msg = (
-            f"<b>AI Auto-Reply Sent</b>\n\n"
+            f"<b>AI Auto-Reply Sent</b>{confidence_tag}\n\n"
             f"<b>To:</b> {name} ({lead.email})\n"
             f"<b>Intent:</b> {intent}\n\n"
-            f"<b>Reply preview:</b>\n{preview}..."
+            f"<b>Full reply sent:</b>\n{full_reply}"
         )
 
         requests.post(
