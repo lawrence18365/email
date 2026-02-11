@@ -49,6 +49,26 @@ class ResponseIntent:
     SPAM = "spam"
     BOUNCE = "bounce"
     UNCLEAR = "unclear"
+    CONVERSATION_COMPLETE = "conversation_complete"  # "thanks", "got it", etc.
+
+# Short, conversation-ending messages that don't need a reply.
+# Checked against stripped/lowered body text.
+CONVERSATION_ENDERS = [
+    "thanks", "thank you", "thanks!", "thank you!", "thx", "ty",
+    "got it", "got it!", "sounds good", "sounds great", "sounds good!",
+    "will do", "will do!", "perfect", "perfect!", "great thanks",
+    "great, thanks", "great thank you", "awesome thanks", "awesome, thanks",
+    "appreciate it", "much appreciated", "noted", "ok thanks", "ok thank you",
+    "okay thanks", "okay, thanks", "thanks so much", "thank you so much",
+    "thanks a lot", "wonderful", "wonderful!", "excellent", "excellent!",
+    "cool thanks", "cool, thanks", "thanks for the info",
+    "thanks for the information", "will check it out", "i'll check it out",
+    "i will check it out", "looking forward to it",
+]
+
+# Max words for a message to qualify as a conversation-ender.
+# Longer messages likely contain real questions even if they start with "thanks".
+ENDER_MAX_WORDS = 12
 
 
 SYSTEM_PROMPT = f"""You are an AI email assistant for Wedding Counselors Directory.
@@ -204,6 +224,20 @@ class AIResponder:
             return {"intent": ResponseIntent.UNSUBSCRIBE, "sentiment": "negative",
                     "urgency": "high", "key_points": ["unsubscribe"], "confidence": 0.9}
 
+        # Conversation-ender detection (e.g. "thanks", "got it", "will do")
+        # Only for short messages — longer messages may contain real questions
+        body_clean = re.sub(r'[>\s]+', ' ', body).strip()  # collapse quoting/whitespace
+        body_clean = re.sub(r'\s*--?\s*$', '', body_clean)  # strip trailing signature dashes
+        # Remove common signature blocks (name, title, phone, email after -- or newline)
+        body_clean = re.sub(r'(?:--|best|regards|sincerely|cheers|warm regards)[\s\S]*$', '', body_clean, flags=re.IGNORECASE).strip()
+        word_count = len(body_clean.split())
+        if word_count <= ENDER_MAX_WORDS:
+            # Strip punctuation for matching
+            body_normalized = re.sub(r'[^\w\s]', '', body_clean).strip()
+            if body_normalized in [re.sub(r'[^\w\s]', '', e).strip() for e in CONVERSATION_ENDERS]:
+                return {"intent": ResponseIntent.CONVERSATION_COMPLETE, "sentiment": "positive",
+                        "urgency": "low", "key_points": ["conversation_ender"], "confidence": 0.95}
+
         # AI-powered analysis for everything else
         prompt = INTENT_ANALYSIS_PROMPT.format(**email_data)
         result = self._call_ai("You are an email intent classifier. Respond in JSON only.", prompt, max_tokens=512)
@@ -226,7 +260,8 @@ class AIResponder:
         intent = analysis.get('intent', '')
 
         # Skip these — no reply needed
-        if intent in [ResponseIntent.OUT_OF_OFFICE, ResponseIntent.SPAM, ResponseIntent.BOUNCE]:
+        if intent in [ResponseIntent.OUT_OF_OFFICE, ResponseIntent.SPAM, ResponseIntent.BOUNCE,
+                       ResponseIntent.CONVERSATION_COMPLETE]:
             logger.info(f"Skipping reply for {intent}")
             return None
 
@@ -271,6 +306,9 @@ class AutoReplyScheduler:
         self.db = db
         self.responder = AIResponder()
 
+    # Max number of AI auto-replies per lead before escalating to human
+    MAX_AI_REPLIES_PER_LEAD = 2
+
     def process_pending_responses(self) -> int:
         """Process all unreviewed responses and send AI replies."""
         from models import Response, Lead, SentEmail, Inbox
@@ -292,6 +330,33 @@ class AutoReplyScheduler:
                         self.db.session.commit()
                         continue
 
+                    # --- Guard: max AI reply depth ---
+                    ai_reply_count = SentEmail.query.filter(
+                        SentEmail.lead_id == lead.id,
+                        SentEmail.subject.like('Re:%')
+                    ).count()
+                    if ai_reply_count >= self.MAX_AI_REPLIES_PER_LEAD:
+                        logger.info(f"Lead {lead.email} hit max AI replies ({ai_reply_count}). Escalating to human.")
+                        response.notes = f"AI: max reply depth ({ai_reply_count}) — needs human review"
+                        self.db.session.commit()
+                        _notify_human_escalation(lead, f"Max AI replies reached ({ai_reply_count}). Their latest message:\n\n{(response.body or '')[:500]}")
+                        continue
+
+                    # --- Guard: duplicate reply check ---
+                    # If we already sent a reply after this response was received, skip
+                    if response.received_at:
+                        existing_reply = SentEmail.query.filter(
+                            SentEmail.lead_id == lead.id,
+                            SentEmail.subject.like('Re:%'),
+                            SentEmail.sent_at >= response.received_at
+                        ).first()
+                        if existing_reply:
+                            logger.info(f"Already replied to {lead.email} since their last response. Marking reviewed.")
+                            response.reviewed = True
+                            response.notes = "AI: duplicate — reply already sent"
+                            self.db.session.commit()
+                            continue
+
                     # Build email data
                     email_data = {
                         "from_name": lead.full_name if hasattr(lead, 'full_name') else f"{lead.first_name or ''} {lead.last_name or ''}".strip(),
@@ -303,6 +368,24 @@ class AutoReplyScheduler:
                     # Analyze intent
                     analysis = self.responder.analyze_intent(email_data)
                     intent = analysis.get('intent', 'unclear')
+                    confidence = analysis.get('confidence', 0)
+
+                    # --- Guard: escalate unclear or low-confidence to human ---
+                    if intent == ResponseIntent.UNCLEAR or confidence < 0.6:
+                        logger.info(f"Low confidence ({confidence}) or unclear for {lead.email}. Escalating to human.")
+                        response.notes = f"AI: {intent} (confidence={confidence:.0%}) — needs human review"
+                        self.db.session.commit()
+                        _notify_human_escalation(lead, f"Intent: {intent} (confidence: {confidence:.0%})\n\nSubject: {response.subject}\n\n{(response.body or '')[:500]}")
+                        continue
+
+                    # --- Conversation-complete: mark reviewed, no reply ---
+                    if intent == ResponseIntent.CONVERSATION_COMPLETE:
+                        response.reviewed = True
+                        response.notified = True
+                        response.notes = "AI: conversation complete — no reply needed"
+                        self.db.session.commit()
+                        logger.info(f"Conversation complete for {lead.email} — skipping reply")
+                        continue
 
                     # Generate reply
                     reply_text = self.responder.generate_reply(email_data, analysis)
@@ -472,6 +555,32 @@ def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
         )
     except Exception as e:
         logger.warning(f"Telegram notify failed: {e}")
+
+
+def _notify_human_escalation(lead, reason):
+    """Send Telegram notification when a response needs manual handling."""
+    try:
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        if not token or not chat_id:
+            return
+
+        name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+        reason_safe = reason[:1500].replace('<', '&lt;').replace('>', '&gt;')
+
+        msg = (
+            f"<b>Needs Human Review</b>\n\n"
+            f"<b>From:</b> {name} ({lead.email})\n\n"
+            f"{reason_safe}"
+        )
+
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+            timeout=10
+        )
+    except Exception as e:
+        logger.warning(f"Telegram escalation notify failed: {e}")
 
 
 def _notify_failure(lead, error_msg):

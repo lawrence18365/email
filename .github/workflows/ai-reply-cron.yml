@@ -2,8 +2,9 @@ name: AI Reply Bot
 
 on:
   schedule:
-    # Run every 2 hours, 24/7 including weekends
-    - cron: '30 */2 * * *'
+    # Run every 2 hours, 8 AM - 10 PM PT only (16:00-06:00 UTC)
+    # No more 3 AM auto-replies
+    - cron: '30 16,18,20,22,0,2,4,6 * * *'
   workflow_dispatch:
 
 jobs:
