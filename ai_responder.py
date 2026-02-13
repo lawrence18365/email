@@ -289,7 +289,7 @@ class AIResponder:
         # Strip email quoting, signatures, and whitespace
         body_clean = re.sub(r'[>\s]+', ' ', body).strip()
         body_clean = re.sub(r'\s*--?\s*$', '', body_clean)
-        body_clean = re.sub(r'(?:--|best|regards|sincerely|cheers|warm regards)[\s\S]*$', '', body_clean, flags=re.IGNORECASE).strip()
+        body_clean = re.sub(r'(?:--|best|regards|sincerely|cheers|warm regards|notice:|confidential|disclaimer|this email|this message is intended)[\s\S]*$', '', body_clean, flags=re.IGNORECASE).strip()
         # Also strip common email signature patterns (name, title, phone, URL lines)
         body_clean = re.sub(r'(?:\*[^*]+\*\s*)+$', '', body_clean).strip()  # *Bold sig lines*
         body_clean = re.sub(r'(?:https?://\S+\s*)+$', '', body_clean).strip()  # trailing URLs
@@ -298,18 +298,32 @@ class AIResponder:
         body_normalized = re.sub(r'[^\w\s]', '', body_clean).strip()
 
         # --- Interested heuristic (no API call needed) ---
+        interested_normalized = [re.sub(r'[^\w\s]', '', p).strip() for p in INTERESTED_PHRASES]
         if word_count <= HEURISTIC_MAX_WORDS:
-            if body_normalized in [re.sub(r'[^\w\s]', '', p).strip() for p in INTERESTED_PHRASES]:
+            if body_normalized in interested_normalized:
                 logger.info(f"Heuristic match: INTERESTED for {from_email} — '{body_clean}'")
                 return {"intent": ResponseIntent.INTERESTED, "sentiment": "positive",
                         "urgency": "high", "key_points": ["interested"], "confidence": 0.95}
+        # Fallback: if body starts with an interested phrase (catches leftover signature text)
+        for phrase in interested_normalized:
+            if body_normalized.startswith(phrase) and len(phrase) >= 3:
+                logger.info(f"Heuristic startswith match: INTERESTED for {from_email} — '{body_clean}'")
+                return {"intent": ResponseIntent.INTERESTED, "sentiment": "positive",
+                        "urgency": "high", "key_points": ["interested"], "confidence": 0.90}
 
         # --- Question heuristic (no API call needed) ---
+        question_normalized = [re.sub(r'[^\w\s]', '', p).strip() for p in QUESTION_PHRASES]
         if word_count <= HEURISTIC_MAX_WORDS:
-            if body_normalized in [re.sub(r'[^\w\s]', '', p).strip() for p in QUESTION_PHRASES]:
+            if body_normalized in question_normalized:
                 logger.info(f"Heuristic match: QUESTION for {from_email} — '{body_clean}'")
                 return {"intent": ResponseIntent.QUESTION, "sentiment": "neutral",
                         "urgency": "medium", "key_points": ["question"], "confidence": 0.95}
+        # Fallback: if body starts with a question phrase
+        for phrase in question_normalized:
+            if body_normalized.startswith(phrase) and len(phrase) >= 3:
+                logger.info(f"Heuristic startswith match: QUESTION for {from_email} — '{body_clean}'")
+                return {"intent": ResponseIntent.QUESTION, "sentiment": "neutral",
+                        "urgency": "medium", "key_points": ["question"], "confidence": 0.90}
 
         # --- Conversation-ender heuristic ---
         if word_count <= ENDER_MAX_WORDS:
@@ -645,19 +659,25 @@ def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
         if not token or not chat_id:
             return
 
-        # Show full reply text (Telegram supports up to 4096 chars)
-        full_reply = reply_text[:3500].replace('<', '&lt;').replace('>', '&gt;')
+        full_reply = reply_text[:3000].replace('<', '&lt;').replace('>', '&gt;')
         name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+        company = lead.company or ''
 
         confidence_tag = ""
         if confidence < 0.7:
-            confidence_tag = f"\n<b>LOW CONFIDENCE ({confidence:.0%}) — please verify</b>"
+            confidence_tag = f"\n⚠️ <b>LOW CONFIDENCE ({confidence:.0%}) — please verify</b>"
+
+        header = f"✅ <b>Auto-Reply Sent</b>{confidence_tag}"
+        who = f"→ {name}"
+        if company:
+            who += f" ({company})"
+        who += f"\n📧 {lead.email}"
 
         msg = (
-            f"<b>AI Auto-Reply Sent</b>{confidence_tag}\n\n"
-            f"<b>To:</b> {name} ({lead.email})\n"
-            f"<b>Intent:</b> {intent}\n\n"
-            f"<b>Full reply sent:</b>\n{full_reply}"
+            f"{header}\n"
+            f"{who}\n"
+            f"🏷 {intent}\n\n"
+            f"{full_reply}"
         )
 
         requests.post(
@@ -678,11 +698,17 @@ def _notify_human_escalation(lead, reason):
             return
 
         name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+        company = lead.company or ''
         reason_safe = reason[:1500].replace('<', '&lt;').replace('>', '&gt;')
 
+        who = f"→ {name}"
+        if company:
+            who += f" ({company})"
+        who += f"\n📧 {lead.email}"
+
         msg = (
-            f"<b>Needs Human Review</b>\n\n"
-            f"<b>From:</b> {name} ({lead.email})\n\n"
+            f"🔴 <b>Needs Your Reply</b>\n"
+            f"{who}\n\n"
             f"{reason_safe}"
         )
 
