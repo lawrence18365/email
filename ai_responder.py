@@ -27,16 +27,35 @@ logger = logging.getLogger(__name__)
 
 # Configuration — OpenRouter API (free tier via Pony Alpha)
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
-AI_MODEL = os.getenv('AI_MODEL', 'openrouter/pony-alpha')
+AI_MODEL = os.getenv('AI_MODEL', 'google/gemini-2.0-flash-001')
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
-# Load context document
-CONTEXT_DOC_PATH = Path(__file__).parent / 'AI_REPLY_CONTEXT.md'
-CONTEXT_DOC = ""
-if CONTEXT_DOC_PATH.exists():
-    CONTEXT_DOC = CONTEXT_DOC_PATH.read_text()
-else:
-    logger.warning(f"AI_REPLY_CONTEXT.md not found at {CONTEXT_DOC_PATH}")
+# Load context documents per brand
+_CONTEXT_DIR = Path(__file__).parent
+CONTEXT_DOCS = {}
+
+_wc_path = _CONTEXT_DIR / 'AI_REPLY_CONTEXT.md'
+if _wc_path.exists():
+    CONTEXT_DOCS['weddingcounselors.com'] = _wc_path.read_text()
+
+_rt_path = _CONTEXT_DIR / 'AI_REPLY_CONTEXT_RATETAP.md'
+if _rt_path.exists():
+    CONTEXT_DOCS['ratetapmx.com'] = _rt_path.read_text()
+
+# Fallback: use WC context if nothing matches
+CONTEXT_DOC = CONTEXT_DOCS.get('weddingcounselors.com', '')
+
+if not CONTEXT_DOCS:
+    logger.warning("No AI_REPLY_CONTEXT docs found")
+
+
+def _get_brand_context(inbox_email: str) -> tuple:
+    """Return (context_doc, brand_label) based on inbox email domain."""
+    domain = (inbox_email or '').split('@')[-1].lower()
+    if domain in CONTEXT_DOCS:
+        label = 'RateTap' if 'ratetap' in domain else 'Wedding Counselors Directory'
+        return CONTEXT_DOCS[domain], label
+    return CONTEXT_DOC, 'Wedding Counselors Directory'
 
 
 class ResponseIntent:
@@ -70,13 +89,53 @@ CONVERSATION_ENDERS = [
 # Longer messages likely contain real questions even if they start with "thanks".
 ENDER_MAX_WORDS = 12
 
+# Positive intent heuristics — these NEVER need an AI call.
+# Short affirmative messages that clearly signal interest.
+INTERESTED_PHRASES = [
+    "yes", "yes please", "yes!", "yes please!", "yes, please",
+    "sure", "sure!", "absolutely", "absolutely!",
+    "im interested", "i'm interested", "i am interested",
+    "interested", "interested!", "very interested",
+    "sign me up", "sign me up!", "count me in", "count me in!",
+    "i'd love to", "id love to", "i would love to",
+    "i'd like to", "id like to", "i would like to",
+    "sounds great sign me up", "yes sign me up",
+    "please do", "please!", "lets do it", "let's do it",
+    "i want in", "i'm in", "im in",
+    "go ahead", "please proceed", "yes i would",
+    "yes i do", "yes i am", "yes absolutely",
+    "i'd love to be included", "i would love to be included",
+    "love to", "would love to",
+]
 
-SYSTEM_PROMPT = f"""You are an AI email assistant for Wedding Counselors Directory.
+# Question intent heuristics — asking for more info.
+QUESTION_PHRASES = [
+    "tell me more", "more information", "more info",
+    "can i get more information", "can you tell me more",
+    "what does it cost", "how much", "how much does it cost",
+    "what are the details", "send me details", "send me more info",
+    "what do i need to do", "how do i sign up", "how does it work",
+    "what is this", "whats this about", "what's this about",
+    "can you explain", "id like to know more", "i'd like to know more",
+    "i have some questions", "i have a question",
+]
+
+# Max words for short-message heuristic matching
+HEURISTIC_MAX_WORDS = 15
+
+
+def _build_system_prompt(inbox_email: str = '') -> str:
+    """Build system prompt with brand-appropriate context."""
+    context, brand = _get_brand_context(inbox_email)
+    return f"""You are an AI email assistant for {brand}.
 You MUST follow every rule in the context document below.
 Do NOT say anything not covered by this document.
 If something isn't in this doc, do NOT say it.
 
-{CONTEXT_DOC}"""
+{context}"""
+
+# Default system prompt (Wedding Counselors) for backward compatibility
+SYSTEM_PROMPT = _build_system_prompt()
 
 INTENT_ANALYSIS_PROMPT = """Analyze this email and classify the sender's intent.
 
@@ -110,8 +169,10 @@ Their message:
 
 IMPORTANT RULES:
 - Follow the context document rules exactly
-- For interested, question, conditional, and meeting_request intents: ALWAYS include the signup link (https://www.weddingcounselors.com/professional/signup) as a clear call-to-action
-- For not_interested and unsubscribe: do NOT include the signup link
+- For interested, question, conditional, and meeting_request intents: ALWAYS end with the signup/CTA link and a clear reason to act NOW (deadline, limited spots, etc.)
+- Every reply to an engaged lead MUST include the CTA link — never leave it out
+- Create urgency using real deadlines and facts from the context doc — don't fabricate
+- For not_interested and unsubscribe: do NOT include any links
 - Write at a Fortune 500 level — polished, professional, concise. No fluff
 - Output ONLY the plain email body text — no subject line, no JSON, no markdown"""
 
@@ -142,8 +203,8 @@ class AIResponder:
                     headers={
                         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                         "Content-Type": "application/json",
-                        "HTTP-Referer": "https://www.weddingcounselors.com",
-                        "X-Title": "Wedding Counselors CRM"
+                        "HTTP-Referer": "https://ratetapmx.com",
+                        "X-Title": "RateTap CRM"
                     },
                     json={
                         "model": AI_MODEL,
@@ -224,21 +285,53 @@ class AIResponder:
             return {"intent": ResponseIntent.UNSUBSCRIBE, "sentiment": "negative",
                     "urgency": "high", "key_points": ["unsubscribe"], "confidence": 0.9}
 
-        # Conversation-ender detection (e.g. "thanks", "got it", "will do")
-        # Only for short messages — longer messages may contain real questions
-        body_clean = re.sub(r'[>\s]+', ' ', body).strip()  # collapse quoting/whitespace
-        body_clean = re.sub(r'\s*--?\s*$', '', body_clean)  # strip trailing signature dashes
-        # Remove common signature blocks (name, title, phone, email after -- or newline)
+        # Clean body text for heuristic matching
+        # Strip email quoting, signatures, and whitespace
+        body_clean = re.sub(r'[>\s]+', ' ', body).strip()
+        body_clean = re.sub(r'\s*--?\s*$', '', body_clean)
         body_clean = re.sub(r'(?:--|best|regards|sincerely|cheers|warm regards)[\s\S]*$', '', body_clean, flags=re.IGNORECASE).strip()
+        # Also strip common email signature patterns (name, title, phone, URL lines)
+        body_clean = re.sub(r'(?:\*[^*]+\*\s*)+$', '', body_clean).strip()  # *Bold sig lines*
+        body_clean = re.sub(r'(?:https?://\S+\s*)+$', '', body_clean).strip()  # trailing URLs
+        body_clean = re.sub(r'[\d\.\-\(\)]{7,}\s*$', '', body_clean).strip()  # phone numbers
         word_count = len(body_clean.split())
+        body_normalized = re.sub(r'[^\w\s]', '', body_clean).strip()
+
+        # --- Interested heuristic (no API call needed) ---
+        if word_count <= HEURISTIC_MAX_WORDS:
+            if body_normalized in [re.sub(r'[^\w\s]', '', p).strip() for p in INTERESTED_PHRASES]:
+                logger.info(f"Heuristic match: INTERESTED for {from_email} — '{body_clean}'")
+                return {"intent": ResponseIntent.INTERESTED, "sentiment": "positive",
+                        "urgency": "high", "key_points": ["interested"], "confidence": 0.95}
+
+        # --- Question heuristic (no API call needed) ---
+        if word_count <= HEURISTIC_MAX_WORDS:
+            if body_normalized in [re.sub(r'[^\w\s]', '', p).strip() for p in QUESTION_PHRASES]:
+                logger.info(f"Heuristic match: QUESTION for {from_email} — '{body_clean}'")
+                return {"intent": ResponseIntent.QUESTION, "sentiment": "neutral",
+                        "urgency": "medium", "key_points": ["question"], "confidence": 0.95}
+
+        # --- Conversation-ender heuristic ---
         if word_count <= ENDER_MAX_WORDS:
-            # Strip punctuation for matching
-            body_normalized = re.sub(r'[^\w\s]', '', body_clean).strip()
             if body_normalized in [re.sub(r'[^\w\s]', '', e).strip() for e in CONVERSATION_ENDERS]:
                 return {"intent": ResponseIntent.CONVERSATION_COMPLETE, "sentiment": "positive",
                         "urgency": "low", "key_points": ["conversation_ender"], "confidence": 0.95}
 
-        # AI-powered analysis for everything else
+        # --- Keyword-based fallback for interested/question ---
+        # Catches messages that don't exactly match phrases but contain strong signals
+        interested_keywords = ['yes', 'interested', 'sign me up', 'count me in', 'want in', "i'm in", 'please do']
+        question_keywords = ['more info', 'more information', 'tell me more', 'how much', 'how does it work', 'what does it cost']
+        if word_count <= HEURISTIC_MAX_WORDS:
+            if any(kw in body_clean for kw in interested_keywords):
+                logger.info(f"Keyword match: INTERESTED for {from_email} — '{body_clean}'")
+                return {"intent": ResponseIntent.INTERESTED, "sentiment": "positive",
+                        "urgency": "high", "key_points": ["interested"], "confidence": 0.85}
+            if any(kw in body_clean for kw in question_keywords):
+                logger.info(f"Keyword match: QUESTION for {from_email} — '{body_clean}'")
+                return {"intent": ResponseIntent.QUESTION, "sentiment": "neutral",
+                        "urgency": "medium", "key_points": ["question"], "confidence": 0.85}
+
+        # AI-powered analysis for everything else (longer/complex messages)
         prompt = INTENT_ANALYSIS_PROMPT.format(**email_data)
         result = self._call_ai("You are an email intent classifier. Respond in JSON only.", prompt, max_tokens=512)
 
@@ -255,8 +348,8 @@ class AIResponder:
         return {"intent": ResponseIntent.UNCLEAR, "sentiment": "neutral",
                 "urgency": "medium", "key_points": [], "confidence": 0.0}
 
-    def generate_reply(self, email_data: Dict, analysis: Dict) -> Optional[str]:
-        """Generate a reply based on intent analysis."""
+    def generate_reply(self, email_data: Dict, analysis: Dict, inbox_email: str = '') -> Optional[str]:
+        """Generate a reply based on intent analysis. Uses inbox_email for brand context."""
         intent = analysis.get('intent', '')
 
         # Skip these — no reply needed
@@ -264,6 +357,10 @@ class AIResponder:
                        ResponseIntent.CONVERSATION_COMPLETE]:
             logger.info(f"Skipping reply for {intent}")
             return None
+
+        # Determine brand for signoff
+        _, brand_label = _get_brand_context(inbox_email)
+        signoff = "RateTap Team" if 'ratetap' in (inbox_email or '').lower() else "Sarah, Wedding Counselors Directory"
 
         # Unsubscribe — quick template, no AI needed
         if intent == ResponseIntent.UNSUBSCRIBE:
@@ -274,9 +371,10 @@ I've removed you from our mailing list. You won't receive any further emails fro
 
 Apologies for the inconvenience.
 
-Sarah, Wedding Counselors Directory"""
+{signoff}"""
 
         # AI-generated reply for everything else
+        system_prompt = _build_system_prompt(inbox_email)
         prompt = REPLY_GENERATION_PROMPT.format(
             intent=intent,
             from_name=email_data.get('from_name', ''),
@@ -285,7 +383,7 @@ Sarah, Wedding Counselors Directory"""
             body=email_data.get('body', '')
         )
 
-        reply = self._call_ai(SYSTEM_PROMPT, prompt, max_tokens=2048)
+        reply = self._call_ai(system_prompt, prompt, max_tokens=2048)
         if reply:
             logger.info(f"Generated reply for {email_data['from_email']} (intent: {intent})")
         return reply
@@ -306,8 +404,10 @@ class AutoReplyScheduler:
         self.db = db
         self.responder = AIResponder()
 
-    # Max number of AI auto-replies per lead before escalating to human
-    MAX_AI_REPLIES_PER_LEAD = 2
+    # Max API failures (across runs) before escalating to human.
+    # Each cron run = 1 retry attempt. At 6 retries with hourly cron,
+    # the system tries for ~6 hours before giving up on a response.
+    MAX_API_RETRIES = 6
 
     def process_pending_responses(self) -> int:
         """Process all unreviewed responses and send AI replies."""
@@ -328,18 +428,6 @@ class AutoReplyScheduler:
                     if not lead:
                         response.reviewed = True
                         self.db.session.commit()
-                        continue
-
-                    # --- Guard: max AI reply depth ---
-                    ai_reply_count = SentEmail.query.filter(
-                        SentEmail.lead_id == lead.id,
-                        SentEmail.subject.like('Re:%')
-                    ).count()
-                    if ai_reply_count >= self.MAX_AI_REPLIES_PER_LEAD:
-                        logger.info(f"Lead {lead.email} hit max AI replies ({ai_reply_count}). Escalating to human.")
-                        response.notes = f"AI: max reply depth ({ai_reply_count}) — needs human review"
-                        self.db.session.commit()
-                        _notify_human_escalation(lead, f"Max AI replies reached ({ai_reply_count}). Their latest message:\n\n{(response.body or '')[:500]}")
                         continue
 
                     # --- Guard: duplicate reply check ---
@@ -373,6 +461,8 @@ class AutoReplyScheduler:
                     # --- Guard: escalate unclear or low-confidence to human ---
                     if intent == ResponseIntent.UNCLEAR or confidence < 0.6:
                         logger.info(f"Low confidence ({confidence}) or unclear for {lead.email}. Escalating to human.")
+                        response.reviewed = True
+                        response.notified = True
                         response.notes = f"AI: {intent} (confidence={confidence:.0%}) — needs human review"
                         self.db.session.commit()
                         _notify_human_escalation(lead, f"Intent: {intent} (confidence: {confidence:.0%})\n\nSubject: {response.subject}\n\n{(response.body or '')[:500]}")
@@ -387,26 +477,8 @@ class AutoReplyScheduler:
                         logger.info(f"Conversation complete for {lead.email} — skipping reply")
                         continue
 
-                    # Generate reply
-                    reply_text = self.responder.generate_reply(email_data, analysis)
-
-                    if not reply_text:
-                        # Only mark reviewed if this was an intentional skip (OOO/spam/bounce),
-                        # NOT if the API failed (rate limit, error). Check if the AI
-                        # actually decided to skip vs couldn't respond.
-                        was_api_failure = getattr(self.responder, '_last_error', None)
-                        if was_api_failure:
-                            logger.warning(f"Skipping {lead.email} — API failure ({was_api_failure}), will retry next run")
-                            self.responder._last_error = None
-                            continue
-
-                        response.reviewed = True
-                        response.notified = True
-                        response.notes = f"AI: {intent} — no reply needed"
-                        self.db.session.commit()
-                        continue
-
-                    # Get inbox and campaign context
+                    # Resolve inbox and campaign context BEFORE generating reply
+                    # so we can pass brand context to the AI
                     sent_email = response.sent_email
                     inbox = None
                     campaign_id = None
@@ -438,6 +510,46 @@ class AutoReplyScheduler:
                         response.reviewed = True
                         response.notified = True
                         response.notes = f"AI: {intent} — could not send (missing campaign context)"
+                        self.db.session.commit()
+                        continue
+
+                    # Generate reply with brand-appropriate context
+                    inbox_email = inbox.email if inbox else ''
+                    reply_text = self.responder.generate_reply(email_data, analysis, inbox_email=inbox_email)
+
+                    if not reply_text:
+                        # Only mark reviewed if this was an intentional skip (OOO/spam/bounce),
+                        # NOT if the API failed (rate limit, error). Check if the AI
+                        # actually decided to skip vs couldn't respond.
+                        was_api_failure = getattr(self.responder, '_last_error', None)
+                        if was_api_failure:
+                            # Track retry count in notes to avoid infinite retries
+                            retry_count = 0
+                            if response.notes and response.notes.startswith("AI: api_retry="):
+                                try:
+                                    retry_count = int(response.notes.split("=")[1].split(" ")[0])
+                                except (ValueError, IndexError):
+                                    pass
+                            retry_count += 1
+
+                            if retry_count >= self.MAX_API_RETRIES:
+                                logger.warning(f"Giving up on {lead.email} after {retry_count} API failures. Escalating to human.")
+                                response.reviewed = True
+                                response.notified = True
+                                response.notes = f"AI: API failed {retry_count}x ({was_api_failure}) — needs human review"
+                                self.db.session.commit()
+                                _notify_human_escalation(lead, f"AI couldn't process after {retry_count} attempts ({was_api_failure}).\n\nSubject: {response.subject}\n\n{(response.body or '')[:500]}")
+                            else:
+                                response.notes = f"AI: api_retry={retry_count} ({was_api_failure})"
+                                self.db.session.commit()
+                                logger.warning(f"Skipping {lead.email} — API failure ({was_api_failure}), retry {retry_count}/{self.MAX_API_RETRIES}")
+
+                            self.responder._last_error = None
+                            continue
+
+                        response.reviewed = True
+                        response.notified = True
+                        response.notes = f"AI: {intent} — no reply needed"
                         self.db.session.commit()
                         continue
 

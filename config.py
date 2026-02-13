@@ -38,7 +38,7 @@ class Config:
     BASIC_AUTH_PASSWORD = os.getenv('AUTH_PASSWORD', 'changeme')
 
     # Application
-    TIMEZONE = os.getenv('TIMEZONE', 'America/Mexico_City')
+    TIMEZONE = os.getenv('TIMEZONE', 'America/Los_Angeles')
 
     # Public base URL for links in emails (unsubscribe, etc.)
     PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', 'http://localhost:5000')

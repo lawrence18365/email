@@ -50,7 +50,7 @@ https://weddingcounselors.com"""
     },
     {
         "step_number": 2,
-        "delay_days": 3,  # 3 days after first email
+        "delay_days": 7,  # 7 days after first email
         "subject_template": "Quick follow-up on your directory listing",
         "email_template": """Hi {firstName},
 
@@ -63,7 +63,7 @@ Wedding Counselors Directory Team"""
     },
     {
         "step_number": 3,
-        "delay_days": 5,  # 5 days after second email (8 days total)
+        "delay_days": 7,  # 7 days after second email (14 days total)
         "subject_template": "Final note on your directory listing",
         "email_template": """Hi {firstName},
 
@@ -150,8 +150,8 @@ def setup():
         print(f"Campaign: {campaign.name} (Status: {campaign.status})")
         print(f"Sequences: {len(EMAIL_SEQUENCES)} steps")
         print(f"  - Step 1: Immediate (day 0)")
-        print(f"  - Step 2: Follow-up (day 3)")
-        print(f"  - Step 3: Final (day 8)")
+        print(f"  - Step 2: Follow-up (day 7)")
+        print(f"  - Step 3: Final (day 14)")
         print(f"\nSending rate: {inbox.max_per_hour} emails/hour")
         print(f"Daily estimate: ~10-15 emails (during business hours)")
 

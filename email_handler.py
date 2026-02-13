@@ -391,10 +391,19 @@ class EmailPersonalizer:
         - {personalizedOpener} or {opener} - AI-generated personalized opener
         - {industry}
         - {title} or {jobTitle}
+        - {deadline} - dynamic date 21 days from now (e.g. "March 5th")
 
         Fallback syntax: {variable|fallback} - uses fallback if variable is empty
         Example: {firstName|there} -> "Katie" if firstName exists, "there" if not
         """
+        from datetime import datetime, timedelta
+
+        # Calculate personal deadline (3 weeks from today)
+        deadline_date = datetime.now() + timedelta(days=21)
+        day = deadline_date.day
+        suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+        deadline_str = deadline_date.strftime(f'%B {day}{suffix}')
+
         # Get personalized opener or use fallback
         opener = getattr(lead, 'personalized_opener', None) or ''
         if not opener and lead.company:
@@ -416,6 +425,7 @@ class EmailPersonalizer:
             'industry': getattr(lead, 'industry', '') or '',
             'title': getattr(lead, 'title', '') or '',
             'jobTitle': getattr(lead, 'title', '') or '',
+            'deadline': deadline_str,
         }
 
         result = template

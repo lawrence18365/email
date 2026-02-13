@@ -2,8 +2,10 @@ name: Email Outreach Cron
 
 on:
   schedule:
-    # Run hourly during business hours (9am-5pm PT = 17:00-01:00 UTC)
-    - cron: '0 17-23,0-1 * * *'
+    # Run hourly 8am-10pm PT (16:00-06:00 UTC)
+    # Emails only send during business hours (9-5 PT, Mon-Fri) via code check.
+    # Extended hours ensure AI replies and notifications are processed evenings too.
+    - cron: '0 16-23,0-6 * * *'
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
@@ -32,9 +34,10 @@ jobs:
           TIMEZONE: America/Los_Angeles
           VERIFALIA_USERNAME: ${{ secrets.VERIFALIA_USERNAME }}
           VERIFALIA_PASSWORD: ${{ secrets.VERIFALIA_PASSWORD }}
-          MAX_EMAILS_PER_HOUR: "3"
+          MAX_EMAILS_PER_HOUR: "5"
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"
+          DAILY_SEND_CAP: "75"
         run: |
           python cron_runner.py --all
 
@@ -44,7 +47,7 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          AI_MODEL: "openrouter/pony-alpha"
+          AI_MODEL: "google/gemini-2.0-flash-001"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NOTIFICATION_BCC_EMAIL: ${{ secrets.NOTIFICATION_BCC_EMAIL }}
@@ -60,6 +63,19 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python telegram_notifier.py --all
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" \
+              -d parse_mode="HTML" \
+              -d text="<b>CRM Cron Failed</b>%0A%0AThe email automation workflow failed. Check GitHub Actions for details."
+          fi
 
       - name: Report status
         if: always()

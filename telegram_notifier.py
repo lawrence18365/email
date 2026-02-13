@@ -73,14 +73,18 @@ def send_telegram_message(message: str) -> bool:
 
 
 def check_new_responses():
-    """Check DB for new responses and notify via Telegram.
+    """Safety-net notification for responses the AI responder didn't handle.
+
+    The AI responder is the primary notification source — it sets
+    notified=True after sending its own Telegram alert. This function
+    only picks up responses that somehow slipped through (e.g. AI
+    responder didn't run, or a new response arrived between steps).
 
     Uses the `notified` boolean column on the Response model so that
-    notification state persists in the database (works across fresh
-    GitHub Actions checkouts).
+    notification state persists in the database.
     """
     with app.app_context():
-        # Get responses that haven't been notified yet
+        # Only notify about responses the AI responder hasn't already handled
         pending = Response.query.filter_by(notified=False).order_by(
             Response.received_at.desc()
         ).limit(50).all()
@@ -94,27 +98,25 @@ def check_new_responses():
                 db.session.commit()
                 continue
 
+            # If AI already reviewed this, it should have set notified=True.
+            # If we're here with reviewed=True but notified=False, just fix the flag.
+            if resp.reviewed:
+                resp.notified = True
+                db.session.commit()
+                continue
+
             name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
             company = lead.company or ""
             body_preview = (resp.body or "")[:300]
-            # Escape HTML special chars
             body_preview = body_preview.replace('<', '&lt;').replace('>', '&gt;')
             name = name.replace('<', '&lt;').replace('>', '&gt;')
 
-            # Determine status
-            status = "New reply"
-            if resp.reviewed and resp.notes and "AI auto-replied" in resp.notes:
-                status = "AI replied"
-            elif resp.reviewed:
-                status = "Reviewed"
-
             notification = (
-                f"<b>New Reply!</b>\n\n"
+                f"<b>New Reply (unprocessed)</b>\n\n"
                 f"<b>From:</b> {name}"
                 + (f" ({company})" if company else "") + "\n"
                 f"<b>Email:</b> {lead.email}\n"
-                f"<b>Subject:</b> {resp.subject or '(no subject)'}\n"
-                f"<b>Status:</b> {status}\n\n"
+                f"<b>Subject:</b> {resp.subject or '(no subject)'}\n\n"
                 f"<b>Message:</b>\n{body_preview}"
                 + ("..." if len(resp.body or "") > 300 else "")
             )
@@ -123,12 +125,12 @@ def check_new_responses():
                 resp.notified = True
                 db.session.commit()
                 new_count += 1
-                logger.info(f"Notified: reply from {lead.email}")
+                logger.info(f"Notified (safety-net): reply from {lead.email}")
 
         if new_count > 0:
-            logger.info(f"Sent {new_count} new reply notifications")
+            logger.info(f"Sent {new_count} safety-net notifications")
         else:
-            logger.info("No new responses to notify about")
+            logger.info("No unprocessed responses to notify about")
 
 
 def check_lead_status():

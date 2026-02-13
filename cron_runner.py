@@ -266,43 +266,10 @@ def check_responses():
                     new_responses += 1
                     logger.info(f"NEW RESPONSE from {lead.email} (lead {lead.id}): {resp_data.get('subject', '')[:60]}")
 
-                    # --- Telegram alert for new response ---
-                    _notify_new_response(lead, resp_data)
-
             except Exception as e:
                 logger.error(f"Error checking inbox {inbox.email}: {e}")
 
     logger.info(f"Response check job completed: {new_responses} new response(s) recorded")
-
-
-def _notify_new_response(lead, resp_data):
-    """Send Telegram notification when a new response is detected."""
-    try:
-        token = os.getenv('TELEGRAM_BOT_TOKEN')
-        chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        if not token or not chat_id:
-            return
-
-        import requests
-        name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
-        body_preview = (resp_data.get('body', '') or '')[:200]
-        body_preview = body_preview.replace('<', '&lt;').replace('>', '&gt;')
-
-        msg = (
-            f"<b>New Response Received</b>\n\n"
-            f"<b>From:</b> {name} ({lead.email})\n"
-            f"<b>Subject:</b> {resp_data.get('subject', 'N/A')}\n\n"
-            f"<i>{body_preview}</i>\n\n"
-            f"AI auto-reply will process this shortly."
-        )
-
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
-            timeout=10
-        )
-    except Exception as e:
-        logger.warning(f"Failed to send Telegram notification: {e}")
 
 
 if __name__ == "__main__":

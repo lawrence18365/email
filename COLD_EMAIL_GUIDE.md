@@ -121,68 +121,69 @@ Gmail's filters block 99.9% of spam now. Here's how to get through:
 
 ---
 
-## Final Email Sequence (Production)
+## Final Email Sequence (Production) — Updated Feb 12 2026
 
 **Note:** Uses `{firstName|there}` fallback syntax - shows name if available, "there" if not.
 State is stored in `{industry}` field.
+**`{deadline}` = dynamic date, 21 days from send date** (e.g. "March 5th"). Each recipient gets their own personal deadline.
 
-**Key claims (verified):**
-- 30,000+ Google impressions in 3 months (from Search Console)
-- Growing to be #1 premarital counseling resource in USA
-- Free listing now, $29/mo after launch (founding member scarcity)
+**Key claims (all verified):**
+- 1,500+ counselor profiles live (1,593 actual)
+- Real couple inquiries received (Chris & Cara, Julie Hisrich, and others)
+- 35k impressions, 354 clicks from Google Search Console
+- Weekly visibility reports now live for founding members
+- **Personal deadline: 3 weeks from first email** (each person gets their own)
+- Post-deadline price: **$29/mo**
+- We are actively generating leads every week
 
 ### Email 1 (Day 0)
 ```
-Subject: free listing for {industry} counselors
+Subject: couple inquiry in {industry} — want in?
 
-Hey {firstName|there},
+Hi {firstName|there},
 
-We're building Wedding Counselors Directory into the #1 resource for couples seeking premarital counseling — 30,000+ Google impressions in our first 3 months and growing fast.
+I'm building WeddingCounselors.com — the first directory dedicated to premarital counseling. We crossed 1,500 counselors this month and we're actively generating leads from engaged couples right now.
 
-Before we start charging, I'm offering founding members a free listing for life (normally $29/mo after launch).
+We're offering free founding member listings through {deadline}. After that, it's $29/month. Founding members keep their free listing permanently.
 
-Takes 2 minutes. Want in?
+Couples are searching for counselors in {industry} right now and we're growing every week.
 
-—
+Takes 2 minutes: https://www.weddingcounselors.com/professional/signup
+
 Sarah
 Wedding Counselors Directory
-weddingcounselors.com | 2108 N St NW, Washington DC 20037
 ```
 
 ### Email 2 (Day 3)
 ```
-Subject: re: free listing for {industry} counselors
+Subject: re: couple inquiry in {industry}
 
-Quick follow-up on my last note.
+Quick follow-up — we just started sending our founding members weekly visibility reports showing their real profile views and couple inquiries.
 
-We're closing founding member registration once we hit 500 counselors. After that, listings go to $29/mo.
+We're generating leads as we speak. The counselors who are listed are getting seen by engaged couples in their area.
 
-Your profile would show up when couples in {industry} search for premarital guidance — and we're already ranking for hundreds of keywords.
+Your free founding member offer expires {deadline}. After that it's $29/mo.
 
-Worth a look?
+2 minutes to get listed: https://www.weddingcounselors.com/professional/signup
 
-—
 Sarah
-weddingcounselors.com
 ```
 
-### Email 3 (Day 8)
+### Email 3 (Day 5)
 ```
-Subject: closing this out
+Subject: your free listing expires {deadline}
 
 Hi {firstName|there},
 
-Last note — we're closing founding member spots soon.
+Last note on this — your free founding member offer expires {deadline}. After that, new counselors pay $29/month.
 
-If you want a free lifetime listing, just reply "yes" and I'll send you the link.
+We're generating real couple inquiries every week and that number is only going up. Founding members who are listed now are already getting visibility.
 
-No pressure either way. Just didn't want you to miss it.
+After {deadline}, this offer is gone for good.
 
-—
+If you want in, reply "yes" or sign up here: https://www.weddingcounselors.com/professional/signup
+
 Sarah
-weddingcounselors.com
-
-P.S. We're on track to be the top Google result for "premarital counseling" searches. Early members get grandfathered in free.
 ```
 
 ---
