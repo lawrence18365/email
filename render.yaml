@@ -1,0 +1,39 @@
+services:
+  - type: cron
+    name: email-outreach-cron
+    runtime: python
+    plan: free
+    schedule: "0 16-23,0-6 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python cron_runner.py --all && python ai_responder.py && python telegram_notifier.py --all
+    envVars:
+      - key: DATABASE_URI
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: VERIFALIA_USERNAME
+        sync: false
+      - key: VERIFALIA_PASSWORD
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: AI_MODEL
+        value: google/gemini-2.0-flash-001
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: NOTIFICATION_BCC_EMAIL
+        sync: false
+      - key: TIMEZONE
+        value: America/Los_Angeles
+      - key: MAX_EMAILS_PER_HOUR
+        value: "5"
+      - key: SENDING_HOURS_START
+        value: "9"
+      - key: SENDING_HOURS_END
+        value: "17"
+      - key: DAILY_SEND_CAP
+        value: "75"
