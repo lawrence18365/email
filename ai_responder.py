@@ -280,14 +280,15 @@ class AIResponder:
             return {"intent": ResponseIntent.OUT_OF_OFFICE, "sentiment": "neutral",
                     "urgency": "low", "key_points": ["ooo"], "confidence": 0.95}
 
-        # Unsubscribe
-        if any(x in body for x in ['unsubscribe', 'remove me', 'opt out', 'stop emailing']):
-            return {"intent": ResponseIntent.UNSUBSCRIBE, "sentiment": "negative",
-                    "urgency": "high", "key_points": ["unsubscribe"], "confidence": 0.9}
-
         # Clean body text for heuristic matching
+        # First, strip quoted/forwarded email content (lines starting with >)
+        # and everything after "On ... wrote:" patterns (quoted replies)
+        body_no_quotes = re.sub(r'(?m)^>.*$', '', body)  # remove > quoted lines
+        body_no_quotes = re.sub(r'on\s+.{10,80}\s+wrote:\s*[\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)  # remove "On ... wrote:" and everything after
+        body_no_quotes = body_no_quotes.strip()
+
         # Strip email quoting, signatures, and whitespace
-        body_clean = re.sub(r'[>\s]+', ' ', body).strip()
+        body_clean = re.sub(r'[\>\s]+', ' ', body_no_quotes).strip()
         body_clean = re.sub(r'\s*--?\s*$', '', body_clean)
         body_clean = re.sub(r'(?:--|best|regards|sincerely|cheers|warm regards|notice:|confidential|disclaimer|this email|this message is intended)[\s\S]*$', '', body_clean, flags=re.IGNORECASE).strip()
         # Also strip common email signature patterns (name, title, phone, URL lines)
@@ -296,6 +297,12 @@ class AIResponder:
         body_clean = re.sub(r'[\d\.\-\(\)]{7,}\s*$', '', body_clean).strip()  # phone numbers
         word_count = len(body_clean.split())
         body_normalized = re.sub(r'[^\w\s]', '', body_clean).strip()
+
+        # Unsubscribe — check cleaned body only (not raw body with quoted footers)
+        # This prevents false positives from "Unsubscribe" links in quoted email footers
+        if any(x in body_clean for x in ['unsubscribe', 'remove me', 'opt out', 'stop emailing']):
+            return {"intent": ResponseIntent.UNSUBSCRIBE, "sentiment": "negative",
+                    "urgency": "high", "key_points": ["unsubscribe"], "confidence": 0.9}
 
         # --- Interested heuristic (no API call needed) ---
         interested_normalized = [re.sub(r'[^\w\s]', '', p).strip() for p in INTERESTED_PHRASES]
@@ -362,7 +369,7 @@ class AIResponder:
         return {"intent": ResponseIntent.UNCLEAR, "sentiment": "neutral",
                 "urgency": "medium", "key_points": [], "confidence": 0.0}
 
-    def generate_reply(self, email_data: Dict, analysis: Dict, inbox_email: str = '') -> Optional[str]:
+    def generate_reply(self, email_data: Dict, analysis: Dict, inbox_email: str = '', lead_deadline: str = None) -> Optional[str]:
         """Generate a reply based on intent analysis. Uses inbox_email for brand context."""
         intent = analysis.get('intent', '')
 
@@ -389,6 +396,16 @@ Apologies for the inconvenience.
 
         # AI-generated reply for everything else
         system_prompt = _build_system_prompt(inbox_email)
+
+        # Inject this lead's personal deadline so the AI uses the exact date
+        # they were told in the outreach email — not any global/hardcoded date.
+        if lead_deadline and 'ratetap' not in (inbox_email or '').lower():
+            system_prompt += (
+                f"\n\n## THIS LEAD'S PERSONAL DEADLINE\n"
+                f"The founding member deadline for this specific person is **{lead_deadline}**. "
+                f"Use this exact date in your reply. Do not use any other date."
+            )
+
         prompt = REPLY_GENERATION_PROMPT.format(
             intent=intent,
             from_name=email_data.get('from_name', ''),
@@ -425,6 +442,10 @@ class AutoReplyScheduler:
 
     def process_pending_responses(self) -> int:
         """Process all unreviewed responses and send AI replies."""
+        # EMERGENCY OVERRIDE: AI disabled by manager request
+        logger.warning("AI Auto-responder DISABLED by manual override. Skipping all processing.")
+        return 0
+
         from models import Response, Lead, SentEmail, Inbox
         from email_handler import EmailSender
 
@@ -529,7 +550,8 @@ class AutoReplyScheduler:
 
                     # Generate reply with brand-appropriate context
                     inbox_email = inbox.email if inbox else ''
-                    reply_text = self.responder.generate_reply(email_data, analysis, inbox_email=inbox_email)
+                    lead_deadline = getattr(lead, 'personal_deadline', None)
+                    reply_text = self.responder.generate_reply(email_data, analysis, inbox_email=inbox_email, lead_deadline=lead_deadline)
 
                     if not reply_text:
                         # Only mark reviewed if this was an intentional skip (OOO/spam/bounce),
