@@ -1230,6 +1230,8 @@ def _ensure_response_columns() -> None:
         db.session.execute(text("ALTER TABLE leads ADD COLUMN email_verification_status TEXT"))
     if "email_verified_at" not in lead_existing:
         db.session.execute(text("ALTER TABLE leads ADD COLUMN email_verified_at DATETIME"))
+    if "personal_deadline" not in lead_existing:
+        db.session.execute(text("ALTER TABLE leads ADD COLUMN personal_deadline TEXT"))
     db.session.commit()
 
 
