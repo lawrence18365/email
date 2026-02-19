@@ -28,6 +28,9 @@ class Lead(db.Model):
     email_verification_status = db.Column(String(50))  # Deliverable, Undeliverable, Risky, Unknown
     email_verified_at = db.Column(DateTime)
 
+    # Per-lead deadline (set when Email 1 is sent, used by AI responder)
+    personal_deadline = db.Column(String(50))
+
     # Enrichment fields
     enriched = db.Column(Boolean, default=False)
     enriched_at = db.Column(DateTime)
