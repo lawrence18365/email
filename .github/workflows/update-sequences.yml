@@ -1,0 +1,23 @@
+name: Update WC Sequences
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update-sequences:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: Update sequences in Turso DB
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python update_wc_sequences.py
