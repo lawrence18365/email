@@ -31,48 +31,58 @@ INBOX_CONFIG = {
 }
 
 # Email templates with personalization variables
+# Psychology notes:
+#   - "Free permanently" lands before $29/month mention (removes free-trial mental model)
+#   - "No credit card, no catch" explicit in every email (removes #1 subconscious objection)
+#   - Deadline framed as affecting NEW signups, not the recipient
+#   - Endowment effect: "your spot", "yours stays free forever once you're in"
+#   - "Reply yes" micro-commitment CTA added to emails 1 & 2 (lower friction than link-only)
+#   - All under 80 words (2026 benchmark for cold email)
 EMAIL_SEQUENCES = [
     {
         "step_number": 1,
-        "delay_days": 0,  # Send immediately when added to campaign
-        "subject_template": "About {company} on Wedding Counselors Directory",
-        "email_template": """Hi {firstName},
+        "delay_days": 0,
+        "subject_template": "couple inquiry in {industry} — want in?",
+        "email_template": """Hi {firstName|there},
 
-I lead partnerships at Wedding Counselors Directory. We are building a trusted directory for premarital counselors and clergy.
+I'm building WeddingCounselors.com — a directory dedicated to premarital counseling. We crossed 1,500 counselors this month and we're generating leads from couples in {industry} right now.
 
-We would like to include {company} with a complimentary founding listing (profile, services, and contact info). Setup takes about 2 minutes.
+Founding member listings are free — permanently. No credit card, no catch. After {deadline}, new counselors pay $29/month. Yours stays free forever once you're in.
 
-Open to it? Reply "yes" and I will send the link.
+Takes 2 minutes: https://www.weddingcounselors.com/professional/signup
 
-Best,
-Wedding Counselors Directory Team
-https://weddingcounselors.com"""
+Or reply "yes" and I'll walk you through it.
+
+Sarah
+Wedding Counselors Directory"""
     },
     {
         "step_number": 2,
-        "delay_days": 7,  # 7 days after first email
-        "subject_template": "Quick follow-up on your directory listing",
-        "email_template": """Hi {firstName},
+        "delay_days": 3,
+        "subject_template": "re: couple inquiry in {industry}",
+        "email_template": """Quick follow-up — founding members are already getting weekly visibility reports showing real profile views and couple inquiries from people searching in their area.
 
-Quick follow-up on the Wedding Counselors Directory listing for {company}. Couples in your area are actively searching for premarital counseling, and we want them to find you.
+Your spot is still open. Free forever, no credit card. After {deadline}, new counselors pay $29/mo — that's for people who join after that date, not you once you're in.
 
-If you want the complimentary founding listing, just reply "yes" and I will send the setup link.
+2 minutes: https://www.weddingcounselors.com/professional/signup
 
-Best,
-Wedding Counselors Directory Team"""
+Or reply "yes."
+
+Sarah"""
     },
     {
         "step_number": 3,
-        "delay_days": 7,  # 7 days after second email (14 days total)
-        "subject_template": "Final note on your directory listing",
-        "email_template": """Hi {firstName},
+        "delay_days": 5,
+        "subject_template": "your free listing expires {deadline}",
+        "email_template": """Hi {firstName|there},
 
-Final note from me about listing {company} in the Wedding Counselors Directory. If you want the complimentary founding listing, reply "yes" and I will send the link.
+Last note from me — after {deadline}, founding member listings close and new counselors pay $29/month.
 
-If it is not a fit, no worries and I will close the loop.
+Your listing is free permanently once you're in. I can't extend that to anyone who signs up after {deadline}.
 
-Wishing you all the best,
-Wedding Counselors Directory Team"""
+Reply "yes" or sign up here: https://www.weddingcounselors.com/professional/signup
+
+Sarah"""
     }
 ]
 
