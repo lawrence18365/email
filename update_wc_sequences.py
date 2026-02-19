@@ -21,7 +21,13 @@ load_dotenv()
 
 DATABASE_URI   = os.getenv('DATABASE_URI', '')
 TURSO_TOKEN    = os.getenv('TURSO_AUTH_TOKEN', '')
-TURSO_DB_URL   = DATABASE_URI.replace('libsql://', 'https://') + '/v2/pipeline'
+
+# DATABASE_URI can be "sqlite+https://host.turso.io?secure=true" or "libsql://host.turso.io"
+_host_match = __import__('re').search(r'https?://([^/?]+)', DATABASE_URI)
+if _host_match:
+    TURSO_DB_URL = f"https://{_host_match.group(1)}/v2/pipeline"
+else:
+    TURSO_DB_URL = DATABASE_URI.replace('libsql://', 'https://') + '/v2/pipeline'
 
 
 def turso_query(sql, args=None):
