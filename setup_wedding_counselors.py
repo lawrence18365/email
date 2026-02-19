@@ -47,7 +47,7 @@ EMAIL_SEQUENCES = [
 
 I'm building WeddingCounselors.com — a directory dedicated to premarital counseling. We crossed 1,500 counselors this month and we're generating leads from couples in {industry} right now.
 
-Founding member listings are free — permanently. No credit card, no catch. After March 15, new counselors pay $29/month. Yours stays free forever once you're in.
+Founding member listings are free — permanently. No credit card, no catch. After {deadline}, new counselors pay $29/month. Yours stays free forever once you're in.
 
 Takes 2 minutes: https://www.weddingcounselors.com/professional/signup
 
@@ -62,7 +62,7 @@ Wedding Counselors Directory"""
         "subject_template": "re: couple inquiry in {industry}",
         "email_template": """Quick follow-up — founding members are already getting weekly visibility reports showing real profile views and couple inquiries from people searching in their area.
 
-Your spot is still open. Free forever, no credit card. After March 15, new counselors pay $29/mo — that's for people who join after that date, not you once you're in.
+Your spot is still open. Free forever, no credit card. After {deadline}, new counselors pay $29/mo — that's for people who join after that date, not you once you're in.
 
 2 minutes: https://www.weddingcounselors.com/professional/signup
 
@@ -73,12 +73,12 @@ Sarah"""
     {
         "step_number": 3,
         "delay_days": 5,
-        "subject_template": "your free listing expires March 15",
+        "subject_template": "your free listing expires {deadline}",
         "email_template": """Hi {firstName|there},
 
-Last note from me — after March 15, founding member listings close and new counselors pay $29/month.
+Last note from me — after {deadline}, founding member listings close and new counselors pay $29/month.
 
-Your listing is free permanently once you're in. I can't extend that to anyone who signs up after March 15.
+Your listing is free permanently once you're in. I can't extend that to anyone who signs up after {deadline}.
 
 Reply "yes" or sign up here: https://www.weddingcounselors.com/professional/signup
 
