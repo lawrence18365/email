@@ -27,16 +27,20 @@ load_dotenv()
 from app import app
 from models import db, Campaign, Sequence
 
+# Hard deadline — matches AI_REPLY_CONTEXT.md exactly so emails and AI replies are consistent.
+DEADLINE = "March 15"
+
 NEW_SEQUENCES = [
     {
         "step_number": 1,
+        "delay_days": 0,
         "subject_template": "couple inquiry in {industry} — want in?",
         "email_template": (
             "Hi {firstName|there},\n\n"
             "I'm building WeddingCounselors.com — a directory dedicated to premarital counseling. "
             "We crossed 1,500 counselors this month and we're generating leads from couples in {industry} right now.\n\n"
-            "Founding member listings are free — permanently. No credit card, no catch. "
-            "After {deadline}, new counselors pay $29/month. Yours stays free forever once you're in.\n\n"
+            f"Founding member listings are free — permanently. No credit card, no catch. "
+            f"After {DEADLINE}, new counselors pay $29/month. Yours stays free forever once you're in.\n\n"
             "Takes 2 minutes: https://www.weddingcounselors.com/professional/signup\n\n"
             "Or reply \"yes\" and I'll walk you through it.\n\n"
             "Sarah\n"
@@ -45,12 +49,13 @@ NEW_SEQUENCES = [
     },
     {
         "step_number": 2,
+        "delay_days": 3,
         "subject_template": "re: couple inquiry in {industry}",
         "email_template": (
             "Quick follow-up — founding members are already getting weekly visibility reports "
             "showing real profile views and couple inquiries from people searching in their area.\n\n"
-            "Your spot is still open. Free forever, no credit card. "
-            "After {deadline}, new counselors pay $29/mo — that's for people who join after that date, "
+            f"Your spot is still open. Free forever, no credit card. "
+            f"After {DEADLINE}, new counselors pay $29/mo — that's for people who join after that date, "
             "not you once you're in.\n\n"
             "2 minutes: https://www.weddingcounselors.com/professional/signup\n\n"
             "Or reply \"yes.\"\n\n"
@@ -59,12 +64,13 @@ NEW_SEQUENCES = [
     },
     {
         "step_number": 3,
-        "subject_template": "your free listing expires {deadline}",
+        "delay_days": 5,
+        "subject_template": f"your free listing expires {DEADLINE}",
         "email_template": (
             "Hi {firstName|there},\n\n"
-            "Last note from me — after {deadline}, founding member listings close and new counselors pay $29/month.\n\n"
+            f"Last note from me — after {DEADLINE}, founding member listings close and new counselors pay $29/month.\n\n"
             "Your listing is free permanently once you're in. "
-            "I can't extend that to anyone who signs up after {deadline}.\n\n"
+            f"I can't extend that to anyone who signs up after {DEADLINE}.\n\n"
             "Reply \"yes\" or sign up here: https://www.weddingcounselors.com/professional/signup\n\n"
             "Sarah"
         ),
@@ -94,13 +100,15 @@ def main():
                 ).first()
 
                 if seq:
-                    old_subject = seq.subject_template
+                    old_subject    = seq.subject_template
+                    old_delay_days = seq.delay_days
                     seq.subject_template = seq_data["subject_template"]
                     seq.email_template   = seq_data["email_template"]
+                    seq.delay_days       = seq_data["delay_days"]
                     db.session.commit()
                     print(f"  Step {seq_data['step_number']}: updated")
-                    print(f"    was: {old_subject!r}")
-                    print(f"    now: {seq_data['subject_template']!r}")
+                    print(f"    subject: {old_subject!r} → {seq_data['subject_template']!r}")
+                    print(f"    delay:   {old_delay_days}d → {seq_data['delay_days']}d")
                 else:
                     print(f"  Step {seq_data['step_number']}: not found, skipping")
 
