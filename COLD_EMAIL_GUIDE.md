@@ -121,7 +121,7 @@ Gmail's filters block 99.9% of spam now. Here's how to get through:
 
 ---
 
-## Final Email Sequence (Production) — Updated Feb 12 2026
+## Final Email Sequence (Production) — Updated Feb 18 2026
 
 **Note:** Uses `{firstName|there}` fallback syntax - shows name if available, "there" if not.
 State is stored in `{industry}` field.
@@ -136,19 +136,27 @@ State is stored in `{industry}` field.
 - Post-deadline price: **$29/mo**
 - We are actively generating leads every week
 
+**Psychology applied (Feb 18 2026):**
+- "Free permanently" framing lands *before* the $29/month mention — removes the "free trial" mental model
+- "No credit card, no catch" explicit in every email — eliminates the #1 subconscious objection for skeptical professionals
+- Deadline reframed as affecting *new signups only*, not the recipient — removes fear of being charged
+- Endowment effect language: "your spot", "yours stays free forever once you're in"
+- "Reply yes" low-friction CTA added to emails 1 & 2 alongside the link (interest-based CTAs convert 2x better than link-only)
+- All under 80 words (2026 benchmark sweet spot)
+
 ### Email 1 (Day 0)
 ```
 Subject: couple inquiry in {industry} — want in?
 
 Hi {firstName|there},
 
-I'm building WeddingCounselors.com — the first directory dedicated to premarital counseling. We crossed 1,500 counselors this month and we're actively generating leads from engaged couples right now.
+I'm building WeddingCounselors.com — a directory dedicated to premarital counseling. We crossed 1,500 counselors this month and we're generating leads from couples in {industry} right now.
 
-We're offering free founding member listings through {deadline}. After that, it's $29/month. Founding members keep their free listing permanently.
-
-Couples are searching for counselors in {industry} right now and we're growing every week.
+Founding member listings are free — permanently. No credit card, no catch. After {deadline}, new counselors pay $29/month. Yours stays free forever once you're in.
 
 Takes 2 minutes: https://www.weddingcounselors.com/professional/signup
+
+Or reply "yes" and I'll walk you through it.
 
 Sarah
 Wedding Counselors Directory
@@ -158,13 +166,13 @@ Wedding Counselors Directory
 ```
 Subject: re: couple inquiry in {industry}
 
-Quick follow-up — we just started sending our founding members weekly visibility reports showing their real profile views and couple inquiries.
+Quick follow-up — founding members are already getting weekly visibility reports showing real profile views and couple inquiries from people searching in their area.
 
-We're generating leads as we speak. The counselors who are listed are getting seen by engaged couples in their area.
+Your spot is still open. Free forever, no credit card. After {deadline}, new counselors pay $29/mo — that's for people who join after that date, not you once you're in.
 
-Your free founding member offer expires {deadline}. After that it's $29/mo.
+2 minutes: https://www.weddingcounselors.com/professional/signup
 
-2 minutes to get listed: https://www.weddingcounselors.com/professional/signup
+Or reply "yes."
 
 Sarah
 ```
@@ -175,13 +183,11 @@ Subject: your free listing expires {deadline}
 
 Hi {firstName|there},
 
-Last note on this — your free founding member offer expires {deadline}. After that, new counselors pay $29/month.
+Last note from me — after {deadline}, founding member listings close and new counselors pay $29/month.
 
-We're generating real couple inquiries every week and that number is only going up. Founding members who are listed now are already getting visibility.
+Your listing is free permanently once you're in. I can't extend that to anyone who signs up after {deadline}.
 
-After {deadline}, this offer is gone for good.
-
-If you want in, reply "yes" or sign up here: https://www.weddingcounselors.com/professional/signup
+Reply "yes" or sign up here: https://www.weddingcounselors.com/professional/signup
 
 Sarah
 ```
