@@ -13,21 +13,26 @@ Changes applied:
 """
 
 import os
+import re
 import sys
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URI   = os.getenv('DATABASE_URI', '')
-TURSO_TOKEN    = os.getenv('TURSO_AUTH_TOKEN', '')
+DATABASE_URI = os.getenv('DATABASE_URI', '')
+TURSO_TOKEN  = os.getenv('TURSO_AUTH_TOKEN', '')
 
 # DATABASE_URI can be "sqlite+https://host.turso.io?secure=true" or "libsql://host.turso.io"
-_host_match = __import__('re').search(r'https?://([^/?]+)', DATABASE_URI)
-if _host_match:
-    TURSO_DB_URL = f"https://{_host_match.group(1)}/v2/pipeline"
+# Extract the bare hostname and build the Turso HTTP pipeline URL.
+_m = re.search(r'https?://([^/?]+)', DATABASE_URI)
+if _m:
+    TURSO_DB_URL = f"https://{_m.group(1)}/v2/pipeline"
+elif 'libsql://' in DATABASE_URI:
+    host = DATABASE_URI.replace('libsql://', '').split('?')[0].split('/')[0]
+    TURSO_DB_URL = f"https://{host}/v2/pipeline"
 else:
-    TURSO_DB_URL = DATABASE_URI.replace('libsql://', 'https://') + '/v2/pipeline'
+    raise ValueError(f"Cannot parse Turso URL from DATABASE_URI: {DATABASE_URI!r}")
 
 
 def turso_query(sql, args=None):
