@@ -3,6 +3,8 @@
 One-time script to update Wedding Counselors email sequences with
 psychology-optimized copy. Run via GitHub Actions workflow_dispatch.
 
+Uses the same Flask/SQLAlchemy app context as the cron — proven to work.
+
 Changes applied:
   - "Free permanently" framing lands before any $29/month mention
   - Explicit "no credit card, no catch" in every email
@@ -13,59 +15,17 @@ Changes applied:
 """
 
 import os
-import re
 import sys
-import requests
-from dotenv import load_dotenv
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
+sys.path.insert(0, script_dir)
+
+from dotenv import load_dotenv
 load_dotenv()
 
-DATABASE_URI = os.getenv('DATABASE_URI', '')
-TURSO_TOKEN  = os.getenv('TURSO_AUTH_TOKEN', '')
-
-# DATABASE_URI can be "sqlite+https://host.turso.io?secure=true" or "libsql://host.turso.io"
-# Extract the bare hostname and build the Turso HTTP pipeline URL.
-_m = re.search(r'https?://([^/?]+)', DATABASE_URI)
-if _m:
-    TURSO_DB_URL = f"https://{_m.group(1)}/v2/pipeline"
-elif 'libsql://' in DATABASE_URI:
-    host = DATABASE_URI.replace('libsql://', '').split('?')[0].split('/')[0]
-    TURSO_DB_URL = f"https://{host}/v2/pipeline"
-else:
-    raise ValueError(f"Cannot parse Turso URL from DATABASE_URI: {DATABASE_URI!r}")
-
-
-def turso_query(sql, args=None):
-    stmt = {"type": "execute", "stmt": {"sql": sql}}
-    if args:
-        stmt["stmt"]["args"] = [{"type": "text", "value": str(a)} for a in args]
-    payload = {"requests": [stmt, {"type": "close"}]}
-    resp = requests.post(
-        TURSO_DB_URL,
-        headers={"Authorization": f"Bearer {TURSO_TOKEN}", "Content-Type": "application/json"},
-        json=payload, timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    result = data["results"][0]["response"]["result"]
-    cols = [c["name"] for c in result["cols"]]
-    rows = [[cell["value"] if cell["type"] != "null" else None for cell in row] for row in result["rows"]]
-    return cols, rows
-
-
-def turso_exec(sql, args=None):
-    stmt = {"type": "execute", "stmt": {"sql": sql}}
-    if args:
-        stmt["stmt"]["args"] = [{"type": "text", "value": str(a)} for a in args]
-    payload = {"requests": [stmt, {"type": "close"}]}
-    resp = requests.post(
-        TURSO_DB_URL,
-        headers={"Authorization": f"Bearer {TURSO_TOKEN}", "Content-Type": "application/json"},
-        json=payload, timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
+from app import app
+from models import db, Campaign, Sequence
 
 NEW_SEQUENCES = [
     {
@@ -115,41 +75,37 @@ NEW_SEQUENCES = [
 def main():
     print("Updating Wedding Counselors email sequences...\n")
 
-    _, rows = turso_query(
-        "SELECT id, name, status FROM campaigns WHERE name LIKE '%Wedding%' OR name LIKE '%wedding%'"
-    )
+    with app.app_context():
+        campaigns = Campaign.query.filter(
+            Campaign.name.ilike('%wedding%')
+        ).all()
 
-    if not rows:
-        print("ERROR: No Wedding Counselors campaigns found.")
-        sys.exit(1)
+        if not campaigns:
+            print("ERROR: No Wedding Counselors campaigns found.")
+            sys.exit(1)
 
-    for row in rows:
-        campaign_id, name, status = row[0], row[1], row[2]
-        print(f"Campaign: {name} (ID: {campaign_id}, Status: {status})")
+        for campaign in campaigns:
+            print(f"Campaign: {campaign.name} (ID: {campaign.id}, Status: {campaign.status})")
 
-        for seq in NEW_SEQUENCES:
-            _, existing = turso_query(
-                "SELECT id, subject_template FROM sequences WHERE campaign_id = ? AND step_number = ?",
-                [campaign_id, seq["step_number"]],
-            )
-            if existing:
-                seq_id = existing[0][0]
-                old_subject = existing[0][1]
-                turso_exec(
-                    "UPDATE sequences SET subject_template=?, email_template=? WHERE id=?",
-                    [seq["subject_template"], seq["email_template"], seq_id],
-                )
-                print(f"  Step {seq['step_number']}: updated")
-                print(f"    was: {old_subject!r}")
-                print(f"    now: {seq['subject_template']!r}")
-            else:
-                print(f"  Step {seq['step_number']}: not found in this campaign, skipping")
+            for seq_data in NEW_SEQUENCES:
+                seq = Sequence.query.filter_by(
+                    campaign_id=campaign.id,
+                    step_number=seq_data["step_number"]
+                ).first()
+
+                if seq:
+                    old_subject = seq.subject_template
+                    seq.subject_template = seq_data["subject_template"]
+                    seq.email_template   = seq_data["email_template"]
+                    db.session.commit()
+                    print(f"  Step {seq_data['step_number']}: updated")
+                    print(f"    was: {old_subject!r}")
+                    print(f"    now: {seq_data['subject_template']!r}")
+                else:
+                    print(f"  Step {seq_data['step_number']}: not found, skipping")
 
     print("\nAll done.")
 
 
 if __name__ == "__main__":
-    if not DATABASE_URI or not TURSO_TOKEN:
-        print("ERROR: DATABASE_URI and TURSO_AUTH_TOKEN must be set.")
-        sys.exit(1)
     main()
