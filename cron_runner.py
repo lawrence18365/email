@@ -172,6 +172,15 @@ def send_scheduled_emails():
                         )
                         db.session.add(sent_email)
 
+                        # Store personal deadline on first email so AI responder
+                        # can use the exact date this lead was told (not a hardcoded global date)
+                        if next_sequence.step_number == 1 and not lead.personal_deadline:
+                            deadline_date = datetime.utcnow() + timedelta(days=21)
+                            day = deadline_date.day
+                            suffix = ('th' if 11 <= day <= 13
+                                      else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th'))
+                            lead.personal_deadline = deadline_date.strftime(f'%B {day}{suffix}')
+
                         # Update lead status
                         if lead.status == 'new':
                             lead.status = 'contacted'
