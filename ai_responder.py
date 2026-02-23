@@ -414,6 +414,11 @@ Apologies for the inconvenience.
             body=email_data.get('body', '')
         )
 
+        # Inject system note (e.g. "this person already signed up") if present
+        system_note = email_data.get('_system_note', '')
+        if system_note:
+            system_prompt += f"\n\n{system_note}"
+
         reply = self._call_ai(system_prompt, prompt, max_tokens=2048)
         if reply:
             logger.info(f"Generated reply for {email_data['from_email']} (intent: {intent})")
@@ -442,10 +447,6 @@ class AutoReplyScheduler:
 
     def process_pending_responses(self) -> int:
         """Process all unreviewed responses and send AI replies."""
-        # EMERGENCY OVERRIDE: AI disabled by manager request
-        logger.warning("AI Auto-responder DISABLED by manual override. Skipping all processing.")
-        return 0
-
         from models import Response, Lead, SentEmail, Inbox
         from email_handler import EmailSender
 
@@ -548,9 +549,32 @@ class AutoReplyScheduler:
                         self.db.session.commit()
                         continue
 
+                    # Check if this lead already signed up on the website
+                    # so the AI doesn't ask them to sign up again
+                    already_registered = False
+                    try:
+                        from cron_runner import is_already_signed_up
+                        already_registered = is_already_signed_up(lead.email)
+                        if already_registered and lead.status != 'signed_up':
+                            lead.status = 'signed_up'
+                            self.db.session.commit()
+                    except Exception:
+                        pass
+
                     # Generate reply with brand-appropriate context
                     inbox_email = inbox.email if inbox else ''
                     lead_deadline = getattr(lead, 'personal_deadline', None)
+
+                    # If already registered, inject that context so AI doesn't
+                    # ask them to sign up or send them the signup link
+                    if already_registered:
+                        email_data['_system_note'] = (
+                            "IMPORTANT: This person has ALREADY signed up and created a profile "
+                            "on the Wedding Counselors website. Do NOT ask them to sign up or "
+                            "send them the signup link. Instead, acknowledge that they are already "
+                            "registered and help with whatever they need (bug reports, questions, etc)."
+                        )
+
                     reply_text = self.responder.generate_reply(email_data, analysis, inbox_email=inbox_email, lead_deadline=lead_deadline)
 
                     if not reply_text:
@@ -611,13 +635,18 @@ class AutoReplyScheduler:
                     # BCC owner so they can see AI replies in their inbox
                     bcc_email = os.getenv('NOTIFICATION_BCC_EMAIL')
 
+                    # Keep replies looking like plain personal emails (no branded template)
+                    from email_templates import build_unsubscribe_url
+                    unsubscribe_url = build_unsubscribe_url(lead)
+
                     success, message_id, error = sender.send_email(
                         to_email=lead.email,
                         subject=reply_subject,
                         body_html=reply_text.replace('\n', '<br>'),
                         bcc=bcc_email,
                         in_reply_to=reply_to_id,
-                        references=ref_chain
+                        references=ref_chain,
+                        unsubscribe_url=unsubscribe_url
                     )
 
                     if success:

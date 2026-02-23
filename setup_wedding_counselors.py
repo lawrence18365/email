@@ -26,7 +26,7 @@ INBOX_CONFIG = {
     "imap_use_ssl": True,
     "username": "hello@weddingcounselors.com",
     "password": EMAIL_PASSWORD,
-    "max_per_hour": 2,  # Targets ~16/day across a standard 9-17 window
+    "max_per_hour": 13,  # Match current DB value (13/hr × 8hr window ≈ 104 capacity)
     "active": True
 }
 
@@ -42,16 +42,24 @@ EMAIL_SEQUENCES = [
     {
         "step_number": 1,
         "delay_days": 0,
-        "subject_template": "couple inquiry in {industry} — want in?",
+        "subject_template": "free listing for {industry} counselors",
         "email_template": """Hi {firstName|there},
 
-I'm building WeddingCounselors.com — a directory dedicated to premarital counseling. We crossed 1,500 counselors this month and we're generating leads from couples in {industry} right now.
+I run WeddingCounselors.com — 5,000+ pages indexed by Google, all focused on premarital counseling. Couples in {industry} are already searching and finding counselors through us.
 
-Founding member listings are free — permanently. No credit card, no catch. After {deadline}, new counselors pay $29/month. Yours stays free forever once you're in.
+Here's what you'd get (free):
 
-Takes 2 minutes: https://www.weddingcounselors.com/professional/signup
+- Your own profile page, optimized to rank when couples search your area
+- A contact form so couples can reach you directly — no middleman
+- A dashboard showing your profile views and inquiries each week
 
-Or reply "yes" and I'll walk you through it.
+Counselors like Dr. William Ryan and Martha Maurno are already getting couple inquiries through their profiles.
+
+Founding member listings are free permanently. No credit card, no catch. After {deadline}, new counselors pay $29/month — but yours stays free forever once you're in.
+
+Takes 2 minutes: https://www.weddingcounselors.com/professional/signup?utm_source=email&utm_medium=outreach&utm_campaign=founding_member
+
+Or reply "yes" and I'll send you the details.
 
 Sarah
 Wedding Counselors Directory"""
@@ -59,14 +67,18 @@ Wedding Counselors Directory"""
     {
         "step_number": 2,
         "delay_days": 3,
-        "subject_template": "re: couple inquiry in {industry}",
-        "email_template": """Quick follow-up — founding members are already getting weekly visibility reports showing real profile views and couple inquiries from people searching in their area.
+        "subject_template": "re: free listing for {industry} counselors",
+        "email_template": """Quick follow-up — we had 35,000+ Google impressions last quarter alone, and couples are actively submitting inquiries through counselor profiles every week.
 
-Your spot is still open. Free forever, no credit card. After {deadline}, new counselors pay $29/mo — that's for people who join after that date, not you once you're in.
+Your profile page would rank alongside 5,000+ indexed pages on our site. Founding members also get weekly visibility reports showing exactly how many couples viewed their profile and searched in their area.
 
-2 minutes: https://www.weddingcounselors.com/professional/signup
+We just crossed 1,500 counselors — most signed up in the last 60 days. The directory is growing fast and early members are getting the most visibility.
 
-Or reply "yes."
+Still free, still no credit card. After {deadline}, new counselors pay $29/mo — that's for people who join later, not you once you're in.
+
+2 minutes: https://www.weddingcounselors.com/professional/signup?utm_source=email&utm_medium=outreach&utm_campaign=founding_member
+
+Or just reply "yes."
 
 Sarah"""
     },
@@ -78,9 +90,27 @@ Sarah"""
 
 Last note from me — after {deadline}, founding member listings close and new counselors pay $29/month.
 
-Your listing is free permanently once you're in. I can't extend that to anyone who signs up after {deadline}.
+Your listing is free permanently once you're in. You get your own page on a 5,000+ page directory that Google already indexes, a contact form for couple inquiries, and weekly visibility reports.
 
-Reply "yes" or sign up here: https://www.weddingcounselors.com/professional/signup
+I can't extend the free offer to anyone who signs up after {deadline}.
+
+Reply "yes" or sign up here: https://www.weddingcounselors.com/professional/signup?utm_source=email&utm_medium=outreach&utm_campaign=founding_member
+
+Sarah"""
+    },
+    {
+        "step_number": 4,
+        "delay_days": 7,
+        "subject_template": "closing your file",
+        "email_template": """Hi {firstName|there},
+
+I've reached out a few times about a free listing on WeddingCounselors.com — wanted to close the loop.
+
+If it's not for you, no worries at all. I'll remove you from follow-ups.
+
+If you do want in before founding member spots close on {deadline}, here's the link: https://www.weddingcounselors.com/professional/signup?utm_source=email&utm_medium=outreach&utm_campaign=founding_member
+
+Either way, wishing you well.
 
 Sarah"""
     }

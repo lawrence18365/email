@@ -386,7 +386,7 @@ class EmailScheduler:
         """Send a specific sequence email to a lead"""
         from models import SentEmail
         from email_handler import EmailSender, EmailPersonalizer
-        from email_templates import wrap_email_html
+        from email_templates import wrap_email_html, build_unsubscribe_url
 
         try:
             # Personalize subject and body
@@ -396,12 +396,16 @@ class EmailScheduler:
             # Wrap in professional HTML template with staff signature
             body_html = wrap_email_html(body, inbox.email, lead=lead)
 
+            # Generate unsubscribe URL for List-Unsubscribe header
+            unsubscribe_url = build_unsubscribe_url(lead)
+
             # Send email
             sender = EmailSender(inbox)
             success, message_id, error = sender.send_email(
                 to_email=lead.email,
                 subject=subject,
-                body_html=body_html
+                body_html=body_html,
+                unsubscribe_url=unsubscribe_url
             )
 
             # Record sent email

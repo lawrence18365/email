@@ -26,6 +26,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Sync Supabase signups (prevent double-outreach)
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python sync_signups.py
+
       - name: Send emails and check responses
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
@@ -34,10 +44,12 @@ jobs:
           TIMEZONE: America/Los_Angeles
           VERIFALIA_USERNAME: ${{ secrets.VERIFALIA_USERNAME }}
           VERIFALIA_PASSWORD: ${{ secrets.VERIFALIA_PASSWORD }}
-          MAX_EMAILS_PER_HOUR: "5"
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MAX_EMAILS_PER_HOUR: "8"
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"
-          DAILY_SEND_CAP: "75"
+          DAILY_SEND_CAP: "50"
         run: |
           python cron_runner.py --all
 
@@ -51,6 +63,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NOTIFICATION_BCC_EMAIL: ${{ secrets.NOTIFICATION_BCC_EMAIL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python ai_responder.py
 

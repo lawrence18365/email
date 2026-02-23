@@ -20,6 +20,7 @@ load_dotenv()
 from app import app, _ensure_response_columns
 from models import db, Lead, Inbox, Campaign, Sequence, CampaignLead, SentEmail, Response
 from email_handler import EmailSender, EmailReceiver, EmailPersonalizer, RateLimiter
+from email_templates import wrap_email_html, build_unsubscribe_url
 from config import Config
 
 import logging
@@ -29,6 +30,56 @@ logger = logging.getLogger(__name__)
 # Run lightweight migrations before any queries
 with app.app_context():
     _ensure_response_columns()
+
+
+# ─── Supabase signup check ───────────────────────────────────────────────
+# Query the Wedding Counselors website database to see if a lead already
+# signed up. Prevents embarrassing "did you sign up?" emails to people
+# who are already on the platform.
+
+_supabase_client = None
+
+def _get_supabase():
+    """Lazy-init Supabase client. Returns None if not configured."""
+    global _supabase_client
+    if _supabase_client is not None:
+        return _supabase_client
+    url = os.environ.get('SUPABASE_URL') or os.environ.get('REACT_APP_SUPABASE_URL', '')
+    key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')
+    if not url or not key:
+        logger.warning("Supabase not configured — skipping website signup checks")
+        _supabase_client = False  # sentinel: tried and failed
+        return None
+    try:
+        from supabase import create_client
+        _supabase_client = create_client(url, key)
+        logger.info("Supabase client initialized for signup checks")
+        return _supabase_client
+    except Exception as e:
+        logger.warning(f"Could not init Supabase client: {e}")
+        _supabase_client = False
+        return None
+
+
+def is_already_signed_up(email: str) -> bool:
+    """Check if this email has a profile on the Wedding Counselors website."""
+    sb = _get_supabase()
+    if not sb:
+        return False
+    try:
+        result = sb.table("profiles").select("id, is_claimed").ilike("email", email.strip()).execute()
+        if result.data:
+            logger.info(f"Lead {email} already has a profile on the website (is_claimed={result.data[0].get('is_claimed')})")
+            return True
+        # Also check auth.users in case they registered with this email but profile email differs
+        result2 = sb.schema("auth").from_("users").select("id").ilike("email", email.strip()).execute()
+        if result2.data:
+            logger.info(f"Lead {email} has an auth account on the website")
+            return True
+        return False
+    except Exception as e:
+        logger.warning(f"Supabase lookup failed for {email}: {e}")
+        return False  # fail open — don't block sends on Supabase errors
 
 
 def is_within_sending_hours():
@@ -54,10 +105,13 @@ def send_scheduled_emails():
         rate_limiter = RateLimiter(db.session)
         personalizer = EmailPersonalizer()
 
-        # Enforce daily send cap (matches Verifalia free tier: 25/day)
-        today_start = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+        # Enforce daily send cap — use local timezone (not UTC) to match sending hours
+        tz = ZoneInfo(Config.TIMEZONE)
+        local_now = datetime.now(tz)
+        local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start_utc = local_midnight.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
         sent_today = SentEmail.query.filter(
-            SentEmail.sent_at >= today_start,
+            SentEmail.sent_at >= today_start_utc,
             SentEmail.status == 'sent'
         ).count()
         daily_cap = int(os.environ.get('DAILY_SEND_CAP', '25'))
@@ -93,6 +147,18 @@ def send_scheduled_emails():
 
                 # Skip if lead has responded
                 if lead.status == 'responded':
+                    continue
+
+                # Skip if lead already signed up on the website
+                if lead.status != 'signed_up' and is_already_signed_up(lead.email):
+                    lead.status = 'signed_up'
+                    cl.status = 'completed'
+                    db.session.commit()
+                    logger.info(f"Skipping {lead.email} — already signed up on website")
+                    continue
+                if lead.status == 'signed_up':
+                    cl.status = 'completed'
+                    db.session.commit()
                     continue
 
                 # Get last sent email for this lead in this campaign
@@ -151,11 +217,16 @@ def send_scheduled_emails():
                     subject = personalizer.personalize(next_sequence.subject_template, lead)
                     body = personalizer.personalize(next_sequence.email_template, lead)
 
+                    # Wrap in professional HTML template with brand footer
+                    body_html = wrap_email_html(body, inbox.email, lead=lead)
+                    unsubscribe_url = build_unsubscribe_url(lead)
+
                     sender = EmailSender(inbox)
                     success, message_id, error = sender.send_email(
                         to_email=lead.email,
                         subject=subject,
-                        body_html=body.replace('\n', '<br>')
+                        body_html=body_html,
+                        unsubscribe_url=unsubscribe_url
                     )
 
                     if success:

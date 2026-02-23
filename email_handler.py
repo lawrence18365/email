@@ -79,7 +79,8 @@ class EmailSender:
         body_plain: Optional[str] = None,
         bcc: Optional[str] = None,
         in_reply_to: Optional[str] = None,
-        references: Optional[str] = None
+        references: Optional[str] = None,
+        unsubscribe_url: Optional[str] = None
     ) -> tuple[bool, Optional[str], Optional[str]]:
         """
         Send an email via SMTP
@@ -103,6 +104,11 @@ class EmailSender:
                 msg['In-Reply-To'] = in_reply_to
             if references:
                 msg['References'] = references
+
+            # List-Unsubscribe header (RFC 8058 one-click + mailto fallback)
+            if unsubscribe_url:
+                msg['List-Unsubscribe'] = f'<{unsubscribe_url}>, <mailto:{self.from_email}?subject=unsubscribe>'
+                msg['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
 
             # Add plain text version (if not provided, strip HTML)
             if body_plain is None:
@@ -398,11 +404,17 @@ class EmailPersonalizer:
         """
         from datetime import datetime, timedelta
 
-        # Calculate personal deadline (3 weeks from today)
-        deadline_date = datetime.now() + timedelta(days=21)
-        day = deadline_date.day
-        suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
-        deadline_str = deadline_date.strftime(f'%B {day}{suffix}')
+        # Use the lead's saved personal deadline if it exists (set on first email).
+        # This keeps the deadline consistent across all sequence steps.
+        # Only calculate a new one if this is the first email to this lead.
+        saved_deadline = getattr(lead, 'personal_deadline', None)
+        if saved_deadline:
+            deadline_str = saved_deadline
+        else:
+            deadline_date = datetime.now() + timedelta(days=21)
+            day = deadline_date.day
+            suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+            deadline_str = deadline_date.strftime(f'%B {day}{suffix}')
 
         # Get personalized opener or use fallback
         opener = getattr(lead, 'personalized_opener', None) or ''
