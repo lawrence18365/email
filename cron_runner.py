@@ -352,22 +352,39 @@ def check_responses():
     logger.info(f"Response check job completed: {new_responses} new response(s) recorded")
 
 
+def auto_reply():
+    """Run AI auto-reply on unreviewed responses."""
+    logger.info("Starting AI auto-reply job...")
+    with app.app_context():
+        try:
+            from ai_responder import AutoReplyScheduler
+            scheduler = AutoReplyScheduler(app=app, db=db)
+            count = scheduler.process_pending_responses()
+            logger.info(f"Auto-reply job completed: {count} replies sent")
+        except Exception as e:
+            logger.error(f"Error in auto-reply job: {e}")
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Run email jobs')
     parser.add_argument('--send', action='store_true', help='Send scheduled emails')
     parser.add_argument('--check', action='store_true', help='Check for responses')
+    parser.add_argument('--reply', action='store_true', help='Run AI auto-reply')
     parser.add_argument('--all', action='store_true', help='Run all jobs')
 
     args = parser.parse_args()
 
-    if args.all or (not args.send and not args.check):
+    if args.all or (not args.send and not args.check and not args.reply):
         send_scheduled_emails()
         check_responses()
+        auto_reply()
     else:
         if args.send:
             send_scheduled_emails()
         if args.check:
             check_responses()
+        if args.reply:
+            auto_reply()
 
     print("Done!")

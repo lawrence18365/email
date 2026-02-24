@@ -169,9 +169,9 @@ Their message:
 
 IMPORTANT RULES:
 - Follow the context document rules exactly
-- For interested, question, conditional, and meeting_request intents: ALWAYS end with the signup/CTA link and a clear reason to act NOW (deadline, limited spots, etc.)
-- Every reply to an engaged lead MUST include the CTA link — never leave it out
-- Create urgency using real deadlines and facts from the context doc — don't fabricate
+- For interested, question, conditional, and meeting_request intents: ALWAYS include the signup/CTA link somewhere natural in the reply
+- Read the conversation context — reply like a real person having a real conversation, not a sales template
+- Use the founding member deadline only when it fits naturally (they're on the fence, asking about pricing, etc.) — don't force it into every reply
 - For not_interested and unsubscribe: do NOT include any links
 - Write at a Fortune 500 level — polished, professional, concise. No fluff
 - Output ONLY the plain email body text — no subject line, no JSON, no markdown"""
