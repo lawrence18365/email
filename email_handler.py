@@ -229,6 +229,16 @@ class EmailReceiver:
         self.username = inbox.username
         self.password = inbox.password
 
+    def _connect_imap(self):
+        """Create and authenticate a fresh IMAP connection."""
+        if self.imap_use_ssl:
+            mail = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=60)
+        else:
+            mail = imaplib.IMAP4(self.imap_host, self.imap_port, timeout=60)
+        mail.login(self.username, self.password)
+        mail.select('INBOX')
+        return mail
+
     def fetch_new_responses(self) -> List[Dict]:
         """
         Fetch recent emails from inbox (last 3 days).
@@ -242,14 +252,7 @@ class EmailReceiver:
         responses = []
 
         try:
-            # Connect to IMAP
-            if self.imap_use_ssl:
-                mail = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
-            else:
-                mail = imaplib.IMAP4(self.imap_host, self.imap_port, timeout=30)
-
-            mail.login(self.username, self.password)
-            mail.select('INBOX')
+            mail = self._connect_imap()
 
             # Search for messages from the last 3 days (catches read emails too)
             since_date = (datetime.utcnow() - timedelta(days=3)).strftime('%d-%b-%Y')
@@ -262,52 +265,115 @@ class EmailReceiver:
 
             message_ids = messages[0].split()
 
-            for msg_id in message_ids:
-                try:
-                    # Fetch email
-                    status, msg_data = mail.fetch(msg_id, '(RFC822)')
+            # Process messages in batches to avoid IMAP connection timeouts
+            BATCH_SIZE = 25
+            for batch_start in range(0, len(message_ids), BATCH_SIZE):
+                batch = message_ids[batch_start:batch_start + BATCH_SIZE]
 
-                    if status != 'OK':
+                # Reconnect for each batch to prevent socket EOF errors
+                if batch_start > 0:
+                    try:
+                        mail.logout()
+                    except Exception:
+                        pass
+                    mail = self._connect_imap()
+
+                for msg_id in batch:
+                    try:
+                        # Fetch email
+                        status, msg_data = mail.fetch(msg_id, '(RFC822)')
+
+                        if status != 'OK':
+                            continue
+
+                        # Parse email
+                        email_body = msg_data[0][1]
+                        email_message = email.message_from_bytes(email_body)
+
+                        # Extract headers
+                        message_id = email_message.get('Message-ID', '').strip('<>')
+                        in_reply_to = email_message.get('In-Reply-To', '').strip('<>')
+                        references = email_message.get('References', '')
+                        subject = self._decode_mime_header(email_message.get('Subject', ''))
+                        from_addr = self._decode_mime_header(email_message.get('From', ''))
+                        date_str = email_message.get('Date', '')
+
+                        # Parse date
+                        date = datetime.utcnow()
+                        if date_str:
+                            try:
+                                date = email.utils.parsedate_to_datetime(date_str)
+                            except:
+                                pass
+
+                        # Extract body
+                        body = self._get_email_body(email_message)
+
+                        responses.append({
+                            'message_id': message_id,
+                            'in_reply_to': in_reply_to,
+                            'references': references,
+                            'subject': subject,
+                            'from': from_addr,
+                            'body': body,
+                            'date': date
+                        })
+
+                    except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                        # Socket died mid-batch — reconnect and retry this message
+                        logger.warning(f"Connection lost fetching {msg_id}, reconnecting: {e}")
+                        try:
+                            mail.logout()
+                        except Exception:
+                            pass
+                        mail = self._connect_imap()
+                        try:
+                            status, msg_data = mail.fetch(msg_id, '(RFC822)')
+                            if status == 'OK':
+                                email_body = msg_data[0][1]
+                                email_message = email.message_from_bytes(email_body)
+                                message_id = email_message.get('Message-ID', '').strip('<>')
+                                in_reply_to = email_message.get('In-Reply-To', '').strip('<>')
+                                references = email_message.get('References', '')
+                                subject = self._decode_mime_header(email_message.get('Subject', ''))
+                                from_addr = self._decode_mime_header(email_message.get('From', ''))
+                                date_str = email_message.get('Date', '')
+                                date = datetime.utcnow()
+                                if date_str:
+                                    try:
+                                        date = email.utils.parsedate_to_datetime(date_str)
+                                    except:
+                                        pass
+                                body = self._get_email_body(email_message)
+                                responses.append({
+                                    'message_id': message_id,
+                                    'in_reply_to': in_reply_to,
+                                    'references': references,
+                                    'subject': subject,
+                                    'from': from_addr,
+                                    'body': body,
+                                    'date': date
+                                })
+                        except Exception as retry_err:
+                            logger.error(f"Retry also failed for {msg_id}: {retry_err}")
+
+                    except imaplib.IMAP4.abort as e:
+                        # IMAP connection aborted — reconnect and continue
+                        logger.warning(f"IMAP abort fetching {msg_id}, reconnecting: {e}")
+                        try:
+                            mail.logout()
+                        except Exception:
+                            pass
+                        mail = self._connect_imap()
+
+                    except Exception as e:
+                        logger.error(f"Error processing message {msg_id}: {str(e)}")
                         continue
 
-                    # Parse email
-                    email_body = msg_data[0][1]
-                    email_message = email.message_from_bytes(email_body)
-
-                    # Extract headers
-                    message_id = email_message.get('Message-ID', '').strip('<>')
-                    in_reply_to = email_message.get('In-Reply-To', '').strip('<>')
-                    references = email_message.get('References', '')
-                    subject = email_message.get('Subject', '')
-                    from_addr = email_message.get('From', '')
-                    date_str = email_message.get('Date', '')
-
-                    # Parse date
-                    date = datetime.utcnow()
-                    if date_str:
-                        try:
-                            date = email.utils.parsedate_to_datetime(date_str)
-                        except:
-                            pass
-
-                    # Extract body
-                    body = self._get_email_body(email_message)
-
-                    responses.append({
-                        'message_id': message_id,
-                        'in_reply_to': in_reply_to,
-                        'references': references,
-                        'subject': subject,
-                        'from': from_addr,
-                        'body': body,
-                        'date': date
-                    })
-
-                except Exception as e:
-                    logger.error(f"Error processing message {msg_id}: {str(e)}")
-                    continue
-
-            mail.logout()
+            try:
+                mail.logout()
+            except Exception:
+                pass
             logger.info(f"Fetched {len(responses)} new responses from {self.inbox.email}")
 
         except imaplib.IMAP4.error as e:
@@ -351,6 +417,23 @@ class EmailReceiver:
                 body = str(email_message.get_payload())
 
         return body.strip()
+
+    def _decode_mime_header(self, value: str) -> str:
+        """Decode MIME-encoded headers into readable UTF-8 text."""
+        if not value:
+            return ""
+
+        parts = email.header.decode_header(value)
+        decoded = []
+        for part, charset in parts:
+            if isinstance(part, bytes):
+                try:
+                    decoded.append(part.decode(charset or 'utf-8', errors='ignore'))
+                except Exception:
+                    decoded.append(part.decode('utf-8', errors='ignore'))
+            else:
+                decoded.append(part)
+        return "".join(decoded)
 
     def _html_to_plain(self, html: str) -> str:
         """Convert HTML to plain text (basic)"""
