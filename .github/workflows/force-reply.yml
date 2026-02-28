@@ -16,6 +16,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Fix false escalations (re-queue responses from API key outage)
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: python fix_false_escalations.py
+
       - name: Force process all pending responses
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
