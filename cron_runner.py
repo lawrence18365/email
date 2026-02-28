@@ -71,11 +71,9 @@ def is_already_signed_up(email: str) -> bool:
         if result.data:
             logger.info(f"Lead {email} already has a profile on the website (is_claimed={result.data[0].get('is_claimed')})")
             return True
-        # Also check auth.users in case they registered with this email but profile email differs
-        result2 = sb.schema("auth").from_("users").select("id").ilike("email", email.strip()).execute()
-        if result2.data:
-            logger.info(f"Lead {email} has an auth account on the website")
-            return True
+        # Note: auth.users is not accessible via PostgREST (schema restriction).
+        # The profiles table check above is sufficient — every signed-up user
+        # gets a profile row via the Supabase trigger.
         return False
     except Exception as e:
         logger.warning(f"Supabase lookup failed for {email}: {e}")
