@@ -46,6 +46,11 @@ jobs:
           VERIFALIA_PASSWORD: ${{ secrets.VERIFALIA_PASSWORD }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AI_MODEL: "google/gemini-2.0-flash-001"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NOTIFICATION_BCC_EMAIL: ${{ secrets.NOTIFICATION_BCC_EMAIL }}
           MAX_EMAILS_PER_HOUR: "8"
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"
@@ -77,6 +82,17 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python telegram_notifier.py --all
+
+      - name: A/B analytics (daily at 5 PM PT)
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TIMEZONE: America/Los_Angeles
+        run: |
+          python ab_analytics.py --telegram
 
       - name: Notify on failure
         if: failure()

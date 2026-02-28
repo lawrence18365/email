@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-URGENT FIX: Restore high-performing subject lines.
+Update shared email bodies and delay_days for all WC campaigns.
 
-"founding member spot" → 19.5% reply rate
-"directory listing"   → 0.0% reply rate  ← CURRENT (broken)
+Subject lines are NOT updated here — setup_ab_test.py handles per-variant
+subjects to preserve the A/B test. This script only updates:
+  - email_template (body text, shared across all variants)
+  - delay_days (step timing)
+  - Creates missing sequence steps
 
-This script restores the founding member framing that actually works.
 Run via: GitHub Actions → "Update WC Sequences" workflow_dispatch
+         (setup_ab_test.py runs after this to set per-variant subjects)
 """
 
 import os
@@ -22,11 +25,12 @@ load_dotenv()
 from app import app
 from models import db, Campaign, Sequence
 
-NEW_SEQUENCES = [
+# Shared email bodies and timing — subjects are set by setup_ab_test.py
+SEQUENCE_UPDATES = [
     {
         "step_number": 1,
         "delay_days": 0,
-        "subject_template": "founding member spot for {industry} counselors",
+        "default_subject": "founding member spot for {industry} counselors",
         "email_template": (
             "Hi {firstName|there},\n\n"
             "I run WeddingCounselors.com — 5,000+ pages indexed by Google, all focused on "
@@ -51,7 +55,7 @@ NEW_SEQUENCES = [
     {
         "step_number": 2,
         "delay_days": 3,
-        "subject_template": "re: founding member spot for {industry} counselors",
+        "default_subject": "re: founding member spot for {industry} counselors",
         "email_template": (
             "Quick follow-up — we had 35,000+ Google impressions last quarter alone, and "
             "couples are actively submitting inquiries through counselor profiles every week.\n\n"
@@ -71,7 +75,7 @@ NEW_SEQUENCES = [
     {
         "step_number": 3,
         "delay_days": 5,
-        "subject_template": "your founding member spot expires {deadline}",
+        "default_subject": "your founding member spot expires {deadline}",
         "email_template": (
             "Hi {firstName|there},\n\n"
             "Last note from me — after {deadline}, founding member listings close and "
@@ -88,7 +92,7 @@ NEW_SEQUENCES = [
     {
         "step_number": 4,
         "delay_days": 7,
-        "subject_template": "last note — {company|your listing}",
+        "default_subject": "last note — {company|your listing}",
         "email_template": (
             "Hi {firstName|there},\n\n"
             "I've reached out a few times about a founding member spot on WeddingCounselors.com — "
@@ -105,9 +109,8 @@ NEW_SEQUENCES = [
 
 
 def main():
-    print("URGENT: Restoring 'founding member spot' subject lines...")
-    print("(Previous: 'directory listing' = 0% reply rate)")
-    print("(Restoring: 'founding member spot' = 19.5% reply rate)\n")
+    print("Updating WC sequence bodies and timing...")
+    print("(Subject lines are handled by setup_ab_test.py to preserve A/B test)\n")
 
     with app.app_context():
         campaigns = Campaign.query.filter(
@@ -121,35 +124,38 @@ def main():
         for campaign in campaigns:
             print(f"Campaign: {campaign.name} (ID: {campaign.id}, Status: {campaign.status})")
 
-            for seq_data in NEW_SEQUENCES:
+            for seq_data in SEQUENCE_UPDATES:
                 seq = Sequence.query.filter_by(
                     campaign_id=campaign.id,
                     step_number=seq_data["step_number"]
                 ).first()
 
                 if seq:
-                    old_subject = seq.subject_template
-                    seq.subject_template = seq_data["subject_template"]
-                    seq.email_template = seq_data["email_template"]
-                    seq.delay_days = seq_data["delay_days"]
-                    db.session.commit()
-                    print(f"  Step {seq_data['step_number']}: UPDATED")
-                    print(f"    subject: {old_subject!r} → {seq_data['subject_template']!r}")
+                    changed = (
+                        seq.email_template != seq_data["email_template"] or
+                        seq.delay_days != seq_data["delay_days"]
+                    )
+                    if changed:
+                        seq.email_template = seq_data["email_template"]
+                        seq.delay_days = seq_data["delay_days"]
+                        db.session.commit()
+                        print(f"  Step {seq_data['step_number']}: UPDATED body/timing (subject unchanged: {seq.subject_template!r})")
+                    else:
+                        print(f"  Step {seq_data['step_number']}: OK (no changes needed)")
                 else:
                     new_seq = Sequence(
                         campaign_id=campaign.id,
                         step_number=seq_data["step_number"],
                         delay_days=seq_data["delay_days"],
-                        subject_template=seq_data["subject_template"],
+                        subject_template=seq_data["default_subject"],
                         email_template=seq_data["email_template"],
                         active=True,
                     )
                     db.session.add(new_seq)
                     db.session.commit()
-                    print(f"  Step {seq_data['step_number']}: CREATED")
-                    print(f"    subject: {seq_data['subject_template']!r}")
+                    print(f"  Step {seq_data['step_number']}: CREATED (subject: {seq_data['default_subject']!r})")
 
-    print("\nDone. Next cron run will use 'founding member spot' subject lines.")
+    print("\nDone. setup_ab_test.py will set per-variant subject lines next.")
 
 
 if __name__ == "__main__":

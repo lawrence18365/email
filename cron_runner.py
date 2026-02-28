@@ -123,18 +123,17 @@ def send_scheduled_emails():
         active_campaigns = Campaign.query.filter_by(status='active').all()
         logger.info(f"Found {len(active_campaigns)} active campaigns")
 
+        # ─── Phase 1: Collect all sendable items per campaign ────────────
+        from email_verifier import EmailVerifier
+        verifier = EmailVerifier(db.session)
+        ready_by_campaign = {c.id: [] for c in active_campaigns}
+
         for campaign in active_campaigns:
             inbox = campaign.inbox
             if not inbox or not inbox.active:
                 logger.warning(f"Campaign {campaign.id} has no active inbox")
                 continue
 
-            # Check rate limit
-            if not rate_limiter.can_send(inbox.id, inbox.max_per_hour):
-                logger.info(f"Rate limit reached for inbox {inbox.email}")
-                continue
-
-            # Get active leads in this campaign
             campaign_leads = CampaignLead.query.filter_by(
                 campaign_id=campaign.id,
                 status='active'
@@ -143,11 +142,9 @@ def send_scheduled_emails():
             for cl in campaign_leads:
                 lead = cl.lead
 
-                # Skip if lead has responded
                 if lead.status == 'responded':
                     continue
 
-                # Skip if lead already signed up on the website
                 if lead.status != 'signed_up' and is_already_signed_up(lead.email):
                     lead.status = 'signed_up'
                     cl.status = 'completed'
@@ -159,13 +156,11 @@ def send_scheduled_emails():
                     db.session.commit()
                     continue
 
-                # Get last sent email for this lead in this campaign
                 last_sent = SentEmail.query.filter_by(
                     lead_id=lead.id,
                     campaign_id=campaign.id
                 ).order_by(SentEmail.sent_at.desc()).first()
 
-                # Determine next sequence step
                 if last_sent:
                     last_step = last_sent.sequence.step_number
                     next_sequence = Sequence.query.filter_by(
@@ -175,99 +170,116 @@ def send_scheduled_emails():
                     ).first()
 
                     if not next_sequence:
-                        # All sequences completed for this lead
                         cl.status = 'completed'
                         db.session.commit()
                         continue
 
-                    # Check if delay has passed
                     delay_days = next_sequence.delay_days
                     if datetime.utcnow() < last_sent.sent_at + timedelta(days=delay_days):
                         continue
                 else:
-                    # First email - get step 1
                     next_sequence = Sequence.query.filter_by(
                         campaign_id=campaign.id,
                         step_number=1,
                         active=True
                     ).first()
-
                     if not next_sequence:
                         continue
 
-                # Re-check rate limit before sending
-                if not rate_limiter.can_send(inbox.id, inbox.max_per_hour):
-                    logger.info(f"Rate limit reached for inbox {inbox.email}")
-                    break
+                ready_by_campaign[campaign.id].append((campaign, cl, lead, next_sequence))
 
-                # Verify email before sending (Verifalia - 25 free/day)
-                from email_verifier import EmailVerifier
-                verifier = EmailVerifier(db.session)
-                verification_status = verifier.verify_email(lead)
-                if not verifier.should_send(verification_status):
-                    logger.warning(f"Skipping {lead.email}: verification={verification_status}")
-                    cl.status = 'stopped'
-                    db.session.commit()
-                    continue
+        # ─── Phase 2: Interleave round-robin across campaigns ────────────
+        from itertools import zip_longest
+        interleaved = []
+        campaign_queues = [q for q in ready_by_campaign.values() if q]
+        for batch in zip_longest(*campaign_queues):
+            for item in batch:
+                if item:
+                    interleaved.append(item)
 
-                # Personalize and send email
-                try:
-                    subject = personalizer.personalize(next_sequence.subject_template, lead)
-                    body = personalizer.personalize(next_sequence.email_template, lead)
+        ready_counts = {cid: len(q) for cid, q in ready_by_campaign.items() if q}
+        logger.info(f"Round-robin collected {len(interleaved)} sendable items: {ready_counts}")
 
-                    # Wrap in professional HTML template with brand footer
-                    body_html = wrap_email_html(body, inbox.email, lead=lead)
-                    unsubscribe_url = build_unsubscribe_url(lead)
+        # ─── Phase 3: Send in interleaved order, respecting caps ─────────
+        sent_per_campaign = {}  # track per-campaign for fairness logging
+        for campaign, cl, lead, next_sequence in interleaved:
+            inbox = campaign.inbox
 
-                    sender = EmailSender(inbox)
-                    success, message_id, error = sender.send_email(
-                        to_email=lead.email,
+            # Check rate limit before each send
+            if not rate_limiter.can_send(inbox.id, inbox.max_per_hour):
+                logger.info(f"Rate limit reached for inbox {inbox.email}, skipping")
+                continue
+
+            # Verify email before sending
+            verification_status = verifier.verify_email(lead)
+            if not verifier.should_send(verification_status):
+                logger.warning(f"Skipping {lead.email}: verification={verification_status}")
+                cl.status = 'stopped'
+                db.session.commit()
+                continue
+
+            try:
+                subject = personalizer.personalize(next_sequence.subject_template, lead)
+                body = personalizer.personalize(next_sequence.email_template, lead)
+
+                body_html = wrap_email_html(body, inbox.email, lead=lead)
+                unsubscribe_url = build_unsubscribe_url(lead)
+
+                sender = EmailSender(inbox)
+                success, message_id, error = sender.send_email(
+                    to_email=lead.email,
+                    subject=subject,
+                    body_html=body_html,
+                    unsubscribe_url=unsubscribe_url
+                )
+
+                if success:
+                    sent_email = SentEmail(
+                        lead_id=lead.id,
+                        campaign_id=campaign.id,
+                        sequence_id=next_sequence.id,
+                        inbox_id=inbox.id,
+                        message_id=message_id,
                         subject=subject,
-                        body_html=body_html,
-                        unsubscribe_url=unsubscribe_url
+                        body=body,
+                        status='sent'
                     )
+                    db.session.add(sent_email)
 
-                    if success:
-                        # Record sent email
-                        sent_email = SentEmail(
-                            lead_id=lead.id,
-                            campaign_id=campaign.id,
-                            sequence_id=next_sequence.id,
-                            inbox_id=inbox.id,
-                            message_id=message_id,
-                            subject=subject,
-                            body=body,
-                            status='sent'
-                        )
-                        db.session.add(sent_email)
+                    if next_sequence.step_number == 1 and not lead.personal_deadline:
+                        deadline_date = datetime.utcnow() + timedelta(days=21)
+                        day = deadline_date.day
+                        suffix = ('th' if 11 <= day <= 13
+                                  else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th'))
+                        lead.personal_deadline = deadline_date.strftime(f'%B {day}{suffix}')
 
-                        # Store personal deadline on first email so AI responder
-                        # can use the exact date this lead was told (not a hardcoded global date)
-                        if next_sequence.step_number == 1 and not lead.personal_deadline:
-                            deadline_date = datetime.utcnow() + timedelta(days=21)
-                            day = deadline_date.day
-                            suffix = ('th' if 11 <= day <= 13
-                                      else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th'))
-                            lead.personal_deadline = deadline_date.strftime(f'%B {day}{suffix}')
+                    if lead.status == 'new':
+                        lead.status = 'contacted'
 
-                        # Update lead status
-                        if lead.status == 'new':
-                            lead.status = 'contacted'
+                    db.session.commit()
 
-                        db.session.commit()
-                        logger.info(f"Sent email to {lead.email} (step {next_sequence.step_number})")
+                    # Track per-campaign sends
+                    cname = campaign.name[:30]
+                    sent_per_campaign[cname] = sent_per_campaign.get(cname, 0) + 1
 
-                        sent_this_run += 1
-                        if sent_this_run >= remaining_today:
-                            logger.info(f"Daily send cap reached ({sent_today + sent_this_run}/{daily_cap}). Stopping.")
-                            return
-                    else:
-                        logger.error(f"Failed to send to {lead.email}: {error}")
+                    logger.info(f"Sent email to {lead.email} (campaign={campaign.id}, step {next_sequence.step_number})")
 
-                except Exception as e:
-                    logger.error(f"Error sending to {lead.email}: {e}")
+                    sent_this_run += 1
+                    if sent_this_run >= remaining_today:
+                        logger.info(f"Daily send cap reached ({sent_today + sent_this_run}/{daily_cap}). Stopping.")
+                        # Log final per-campaign breakdown before exiting
+                        logger.info(f"Round-robin send breakdown: {sent_per_campaign}")
+                        return
+                else:
+                    logger.error(f"Failed to send to {lead.email}: {error}")
 
-    logger.info("Scheduled email send job completed")
+            except Exception as e:
+                logger.error(f"Error sending to {lead.email}: {e}")
+
+    # Log per-campaign breakdown at end of run
+    if sent_per_campaign:
+        logger.info(f"Round-robin send breakdown: {sent_per_campaign}")
+    logger.info(f"Scheduled email send job completed: {sent_this_run} sent this run")
 
 
 def _parse_ooo_return_date(body: str) -> str:
@@ -359,6 +371,14 @@ def check_responses():
 
                     if not lead and from_email:
                         lead = Lead.query.filter_by(email=from_email).first()
+                        # Try to find the most recent SentEmail for A/B attribution
+                        if lead and not sent_email:
+                            sent_email = SentEmail.query.filter_by(
+                                lead_id=lead.id,
+                                status='sent'
+                            ).order_by(SentEmail.sent_at.desc()).first()
+                            if sent_email:
+                                logger.info(f"Fallback attribution: linked reply from {lead.email} to campaign {sent_email.campaign_id}")
 
                     # Skip emails from ourselves or unknown senders
                     if not lead:

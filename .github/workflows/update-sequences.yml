@@ -22,3 +22,10 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
         run: python update_wc_sequences.py
+
+      - name: Setup A/B test (create campaigns C & D, redistribute leads)
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: python setup_ab_test.py
