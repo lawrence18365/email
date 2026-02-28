@@ -123,6 +123,42 @@ QUESTION_PHRASES = [
 # Max words for short-message heuristic matching
 HEURISTIC_MAX_WORDS = 15
 
+# ─── Hard AI Gate: reply validation before send ──────────────────────────
+MIN_REPLY_WORDS = 10
+MAX_REPLY_LENGTH = 5000
+
+
+def validate_reply(reply_text, intent=''):
+    """
+    Hard gate: validate AI-generated reply before sending.
+    Returns (is_valid: bool, reason: str).
+
+    No code path should reach send_email() without passing this check.
+    """
+    if not reply_text or not reply_text.strip():
+        return False, "empty_or_none"
+
+    text = reply_text.strip()
+    word_count = len(text.split())
+
+    # Unsubscribe replies are short templates — relax word minimum
+    if intent == ResponseIntent.UNSUBSCRIBE:
+        if word_count < 5:
+            return False, f"too_short ({word_count} words)"
+        return True, "ok"
+
+    if word_count < MIN_REPLY_WORDS:
+        return False, f"too_short ({word_count} words, min {MIN_REPLY_WORDS})"
+
+    if len(text) > MAX_REPLY_LENGTH:
+        return False, f"too_long ({len(text)} chars, max {MAX_REPLY_LENGTH})"
+
+    # Reject raw JSON/markdown artifacts (AI sometimes outputs these)
+    if text.startswith('{') or text.startswith('```') or text.startswith('##'):
+        return False, "contains_artifacts"
+
+    return True, "ok"
+
 
 def _build_system_prompt(inbox_email: str = '') -> str:
     """Build system prompt with brand-appropriate context."""
@@ -582,6 +618,20 @@ class AutoReplyScheduler:
                         )
 
                     reply_text = self.responder.generate_reply(email_data, analysis, inbox_email=inbox_email, lead_deadline=lead_deadline)
+
+                    # ═══ HARD GATE: validate before sending ═══
+                    if reply_text:
+                        is_valid, reason = validate_reply(reply_text, intent)
+                        if not is_valid:
+                            logger.error(f"HARD GATE blocked reply to {lead.email}: {reason}")
+                            logger.error(f"HARD GATE rejected text: {reply_text[:200]!r}")
+                            _notify_failure(
+                                lead,
+                                f"AI reply blocked by quality gate: {reason}",
+                                step_info=f"reply to response #{response.id}"
+                            )
+                            reply_text = None
+                            self.responder._last_error = f"quality_gate_{reason}"
 
                     if not reply_text:
                         # Only mark reviewed if this was an intentional skip (OOO/spam/bounce),

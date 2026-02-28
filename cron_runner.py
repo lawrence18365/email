@@ -451,6 +451,23 @@ def auto_reply():
             logger.error(f"Error in auto-reply job: {e}")
 
 
+def force_process_pending():
+    """Reset retry counters and force AI auto-reply on all unreviewed responses."""
+    logger.info("FORCE MODE: Re-processing all pending responses...")
+    with app.app_context():
+        pending = Response.query.filter_by(reviewed=False).all()
+        reset_count = 0
+        for resp in pending:
+            if resp.notes and 'api_retry=' in (resp.notes or ''):
+                resp.notes = None
+                reset_count += 1
+        db.session.commit()
+        logger.info(f"Reset {reset_count} retry counters out of {len(pending)} pending responses")
+
+        # Now run auto-reply — it will pick up all unreviewed
+        auto_reply()
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Run email jobs')
@@ -458,10 +475,13 @@ if __name__ == "__main__":
     parser.add_argument('--check', action='store_true', help='Check for responses')
     parser.add_argument('--reply', action='store_true', help='Run AI auto-reply')
     parser.add_argument('--all', action='store_true', help='Run all jobs')
+    parser.add_argument('--force-reply', action='store_true', help='Force re-process all pending responses')
 
     args = parser.parse_args()
 
-    if args.all or (not args.send and not args.check and not args.reply):
+    if args.force_reply:
+        force_process_pending()
+    elif args.all or (not args.send and not args.check and not args.reply):
         send_scheduled_emails()
         check_responses()
         auto_reply()
