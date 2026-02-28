@@ -424,14 +424,6 @@ Apologies for the inconvenience.
             logger.info(f"Generated reply for {email_data['from_email']} (intent: {intent})")
         return reply
 
-    def should_auto_send(self, analysis: Dict) -> bool:
-        """Determine if reply should be auto-sent.
-        Always returns True when a reply was generated — never ghost a real person.
-        Spam/OOO/bounce are already filtered out in generate_reply() (returns None).
-        """
-        return True
-
-
 class AutoReplyScheduler:
     """Processes pending responses and sends AI replies."""
 
@@ -461,6 +453,7 @@ class AutoReplyScheduler:
                     self.responder._last_error = None  # Reset for each response
 
                     lead = response.lead
+                    old_status = lead.status if lead else ''
                     if not lead:
                         response.reviewed = True
                         self.db.session.commit()
@@ -501,7 +494,7 @@ class AutoReplyScheduler:
                         response.notified = True
                         response.notes = f"AI: {intent} (confidence={confidence:.0%}) — needs human review"
                         self.db.session.commit()
-                        _notify_human_escalation(lead, f"Intent: {intent} (confidence: {confidence:.0%})\n\nSubject: {response.subject}\n\n{(response.body or '')[:500]}")
+                        _notify_human_escalation(lead, '', intent=intent, confidence=confidence, response_obj=response)
                         continue
 
                     # --- Conversation-complete: mark reviewed, no reply ---
@@ -540,6 +533,19 @@ class AutoReplyScheduler:
                             seq = Sequence.query.filter_by(campaign_id=campaign_id).first()
                             if seq:
                                 sequence_id = seq.id
+
+                    # Last-resort fallback: use any active campaign and its first sequence.
+                    # This handles replies to nudge emails sent outside the CRM pipeline.
+                    if not campaign_id or not sequence_id:
+                        from models import Campaign, Sequence
+                        fallback_campaign = Campaign.query.filter_by(status='active').first()
+                        if fallback_campaign:
+                            if not campaign_id:
+                                campaign_id = fallback_campaign.id
+                            fallback_seq = Sequence.query.filter_by(campaign_id=campaign_id).first()
+                            if fallback_seq and not sequence_id:
+                                sequence_id = fallback_seq.id
+                            logger.info(f"Using fallback campaign context for {lead.email} (campaign={campaign_id}, sequence={sequence_id})")
 
                     if not inbox or not campaign_id or not sequence_id:
                         logger.error(f"Missing inbox/campaign/sequence for reply to {lead.email}")
@@ -598,7 +604,7 @@ class AutoReplyScheduler:
                                 response.notified = True
                                 response.notes = f"AI: API failed {retry_count}x ({was_api_failure}) — needs human review"
                                 self.db.session.commit()
-                                _notify_human_escalation(lead, f"AI couldn't process after {retry_count} attempts ({was_api_failure}).\n\nSubject: {response.subject}\n\n{(response.body or '')[:500]}")
+                                _notify_human_escalation(lead, '', intent=f'API failed {retry_count}x', confidence=0, response_obj=response)
                             else:
                                 response.notes = f"AI: api_retry={retry_count} ({was_api_failure})"
                                 self.db.session.commit()
@@ -683,7 +689,9 @@ class AutoReplyScheduler:
 
                         # Send Telegram notification about the auto-reply
                         confidence = analysis.get('confidence', 0)
-                        _notify_auto_reply(lead, intent, reply_text, confidence)
+                        _notify_auto_reply(lead, intent, reply_text, confidence,
+                                           their_message=response.body or '',
+                                           old_status=old_status)
 
                     else:
                         logger.error(f"Failed to send reply to {lead.email}: {error}")
@@ -691,7 +699,7 @@ class AutoReplyScheduler:
                         response.notified = True
                         response.notes = f"AI: {intent} — send FAILED: {error}"
                         self.db.session.commit()
-                        _notify_failure(lead, f"Send failed to {lead.email}: {error}")
+                        _notify_failure(lead, f"Send failed to {lead.email}: {error}", step_info=f"reply to response #{response.id}")
 
                 except Exception as e:
                     logger.error(f"Error processing response {response.id}: {str(e)}")
@@ -702,7 +710,7 @@ class AutoReplyScheduler:
         return replies_sent
 
 
-def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
+def _notify_auto_reply(lead, intent, reply_text, confidence=1.0, their_message='', old_status=''):
     """Send a Telegram notification when an AI reply is sent."""
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -710,26 +718,47 @@ def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
         if not token or not chat_id:
             return
 
-        full_reply = reply_text[:3000].replace('<', '&lt;').replace('>', '&gt;')
+        def _esc(s):
+            return (s or '').replace('<', '&lt;').replace('>', '&gt;')
+
         name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
         company = lead.company or ''
 
-        confidence_tag = ""
-        if confidence < 0.7:
-            confidence_tag = f"\n⚠️ <b>LOW CONFIDENCE ({confidence:.0%}) — please verify</b>"
+        # Short previews instead of full dumps
+        their_preview = _esc((their_message or '')[:150].strip())
+        if len(their_message or '') > 150:
+            their_preview += '...'
+        our_preview = _esc((reply_text or '')[:150].strip())
+        if len(reply_text or '') > 150:
+            our_preview += '...'
 
-        header = f"✅ <b>Auto-Reply Sent</b>{confidence_tag}"
-        who = f"→ {name}"
+        confidence_tag = f" ({confidence:.0%})"
+        low_conf = ""
+        if confidence < 0.7:
+            low_conf = "\n⚠️ <b>LOW CONFIDENCE — please verify</b>"
+
+        # Status change
+        new_status = lead.status or ''
+        status_line = ''
+        if old_status and old_status != new_status:
+            status_line = f"\nStatus: {old_status} → {new_status}"
+
+        who_line = _esc(name)
         if company:
-            who += f" ({company})"
-        who += f"\n📧 {lead.email}"
+            who_line += f" | {_esc(company)}"
 
         msg = (
-            f"{header}\n"
-            f"{who}\n"
-            f"🏷 {intent}\n\n"
-            f"{full_reply}"
+            f"✅ <b>AUTO-REPLY SENT</b>{low_conf}\n\n"
+            f"<b>{who_line}</b>\n"
+            f"{lead.email} | {intent}{confidence_tag}\n"
         )
+
+        if their_preview:
+            msg += f"\nThem: \"{their_preview}\"\n"
+        msg += f"Us: \"{our_preview}\"\n"
+
+        if status_line:
+            msg += status_line
 
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -740,7 +769,7 @@ def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
         logger.warning(f"Telegram notify failed: {e}")
 
 
-def _notify_human_escalation(lead, reason):
+def _notify_human_escalation(lead, reason, intent='', confidence=0, response_obj=None):
     """Send Telegram notification when a response needs manual handling."""
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -748,20 +777,62 @@ def _notify_human_escalation(lead, reason):
         if not token or not chat_id:
             return
 
+        def _esc(s):
+            return (s or '').replace('<', '&lt;').replace('>', '&gt;')
+
         name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
         company = lead.company or ''
-        reason_safe = reason[:1500].replace('<', '&lt;').replace('>', '&gt;')
 
-        who = f"→ {name}"
+        who_line = _esc(name)
         if company:
-            who += f" ({company})"
-        who += f"\n📧 {lead.email}"
+            who_line += f" | {_esc(company)}"
 
-        msg = (
-            f"🔴 <b>Needs Your Reply</b>\n"
-            f"{who}\n\n"
-            f"{reason_safe}"
-        )
+        # Calculate wait time
+        wait_str = ''
+        if response_obj and hasattr(response_obj, 'received_at') and response_obj.received_at:
+            delta = datetime.utcnow() - response_obj.received_at
+            hours = int(delta.total_seconds() / 3600)
+            if hours >= 24:
+                wait_str = f"{hours // 24}d {hours % 24}h"
+            else:
+                wait_str = f"{hours}h"
+
+        intent_line = ''
+        if intent:
+            intent_line = f"Intent: {intent} ({confidence:.0%})"
+            if wait_str:
+                intent_line += f" | Waiting: {wait_str}"
+
+        # Extract body preview from reason (find the body part after Subject: line)
+        body_preview = ''
+        if response_obj and response_obj.body:
+            body_preview = _esc(response_obj.body[:300].strip())
+            if len(response_obj.body) > 300:
+                body_preview += '...'
+
+        # Suggest action based on body content
+        body_lower = (response_obj.body or '').lower() if response_obj else ''
+        suggested = ''
+        if any(w in body_lower for w in ['phone', 'call me', 'call you', 'touch base', 'speak with']):
+            suggested = 'Phone call requested — send your number'
+        elif any(w in body_lower for w in ['bug', 'error', 'broken', 'not working', "doesn't work", "can't"]):
+            suggested = 'Technical issue — investigate and respond'
+        elif any(w in body_lower for w in ['cost', 'price', 'pricing', 'how much', 'fee']):
+            suggested = 'Pricing question — check context doc'
+        elif any(w in body_lower for w in ['who are you', 'what is this', 'what company']):
+            suggested = 'Confused about us — send intro explanation'
+
+        msg = f"🔴 <b>NEEDS YOUR REPLY</b>\n\n"
+        msg += f"<b>{who_line}</b>\n"
+        msg += f"{lead.email}\n"
+        if intent_line:
+            msg += f"{intent_line}\n"
+
+        if body_preview:
+            msg += f"\n\"{body_preview}\"\n"
+
+        if suggested:
+            msg += f"\n💡 <b>Suggested:</b> {suggested}"
 
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -772,7 +843,7 @@ def _notify_human_escalation(lead, reason):
         logger.warning(f"Telegram escalation notify failed: {e}")
 
 
-def _notify_failure(lead, error_msg):
+def _notify_failure(lead, error_msg, step_info=''):
     """Send Telegram notification when AI reply fails."""
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -780,14 +851,27 @@ def _notify_failure(lead, error_msg):
         if not token or not chat_id:
             return
 
-        email = lead.email if lead else "unknown"
-        error_short = error_msg[:200].replace('<', '&lt;').replace('>', '&gt;')
+        def _esc(s):
+            return (s or '').replace('<', '&lt;').replace('>', '&gt;')
 
-        msg = (
-            f"<b>AI Reply Failed</b>\n\n"
-            f"<b>Lead:</b> {email}\n"
-            f"<b>Error:</b> {error_short}"
-        )
+        email = lead.email if lead else "unknown"
+        name = ''
+        company = ''
+        if lead:
+            name = f"{lead.first_name or ''} {lead.last_name or ''}".strip()
+            company = lead.company or ''
+        error_short = _esc(error_msg[:300])
+
+        who_line = _esc(name) if name else email
+        if company:
+            who_line += f" | {_esc(company)}"
+
+        msg = f"⚠️ <b>AI REPLY FAILED</b>\n\n"
+        msg += f"<b>{who_line}</b>\n"
+        msg += f"{email}\n"
+        if step_info:
+            msg += f"Step: {_esc(step_info)}\n"
+        msg += f"\nError: {error_short}"
 
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",

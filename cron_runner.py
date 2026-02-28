@@ -272,6 +272,59 @@ def send_scheduled_emails():
     logger.info("Scheduled email send job completed")
 
 
+def _parse_ooo_return_date(body: str) -> str:
+    """Try to extract a return date from an OOO message body. Returns YYYY-MM-DD or ''."""
+    import re
+    from datetime import datetime as _dt
+
+    # Common patterns: "return on March 5", "back on 3/5/2026", "returning February 25th"
+    patterns = [
+        # "return/back on March 5, 2026" or "March 5th"
+        r'(?:return|back|available|office)\s+(?:on|by)?\s*'
+        r'((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4})',
+        # "return/back on 3/5/2026" or "3/5/26" or "03/05/2026"
+        r'(?:return|back|available|office)\s+(?:on|by)?\s*(\d{1,2}/\d{1,2}/\d{2,4})',
+        # "return/back on 2026-03-05"
+        r'(?:return|back|available|office)\s+(?:on|by)?\s*(\d{4}-\d{2}-\d{2})',
+        # Standalone date mention near OOO keywords: "I will be out until March 5"
+        r'(?:until|through|till)\s+'
+        r'((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4})',
+        r'(?:until|through|till)\s+(\d{1,2}/\d{1,2}/\d{2,4})',
+    ]
+
+    body_clean = body.lower().replace('\n', ' ').replace('\r', ' ')
+
+    for pattern in patterns:
+        match = re.search(pattern, body_clean, re.IGNORECASE)
+        if not match:
+            continue
+        date_str = match.group(1).strip().rstrip(',')
+        # Remove ordinal suffixes
+        date_str = re.sub(r'(\d)(st|nd|rd|th)', r'\1', date_str)
+
+        # Try parsing common formats
+        for fmt in [
+            '%B %d %Y', '%B %d, %Y', '%B %d',
+            '%b %d %Y', '%b %d, %Y', '%b %d',
+            '%b. %d %Y', '%b. %d, %Y', '%b. %d',
+            '%m/%d/%Y', '%m/%d/%y',
+            '%Y-%m-%d',
+        ]:
+            try:
+                parsed = _dt.strptime(date_str, fmt)
+                # If no year in format, assume current or next year
+                if '%Y' not in fmt and '%y' not in fmt:
+                    now = _dt.utcnow()
+                    parsed = parsed.replace(year=now.year)
+                    if parsed < now - timedelta(days=30):
+                        parsed = parsed.replace(year=now.year + 1)
+                return parsed.strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+
+    return ''
+
+
 def check_responses():
     """Check for email responses and record new ones in the DB."""
     logger.info("Starting response check job...")
@@ -330,6 +383,21 @@ def check_responses():
                         body=resp_data.get('body'),
                         reviewed=False
                     )
+
+                    # --- OOO return date detection ---
+                    body_lower = (resp_data.get('body') or '').lower()
+                    subject_lower = (resp_data.get('subject') or '').lower()
+                    combined = subject_lower + ' ' + body_lower
+                    is_ooo = any(x in combined for x in [
+                        'out of office', 'auto-reply', 'automatic reply',
+                        'on vacation', 'away from', 'out of the office'
+                    ])
+                    if is_ooo:
+                        return_date = _parse_ooo_return_date(resp_data.get('body') or '')
+                        if return_date:
+                            response.notes = f"OOO_RETURN:{return_date}"
+                            logger.info(f"OOO detected for {lead.email}, return date: {return_date}")
+
                     db.session.add(response)
 
                     lead.status = 'responded'
