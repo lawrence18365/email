@@ -404,7 +404,7 @@ class BounceProcessor:
                 {
                     'email': b.email,
                     'status': b.status,
-                    'reason': b.notes,
+                    'reason': b.status,
                     'date': b.updated_at.isoformat() if b.updated_at else None
                 }
                 for b in bounced[:50]  # Limit to 50 most recent
