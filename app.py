@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from functools import wraps
 from config import Config
-from models import db, Lead, Campaign, Sequence, Inbox, SentEmail, Response, CampaignLead, CampaignInbox, SendingSchedule
+from models import db, Lead, Campaign, Sequence, Inbox, SentEmail, Response, CampaignLead, CampaignInbox, SendingSchedule, Suppression
 from sqlalchemy import text
 from email_handler import EmailSender, EmailReceiver, EmailPersonalizer
 from scheduler import EmailScheduler

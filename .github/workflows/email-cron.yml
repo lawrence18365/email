@@ -3,7 +3,7 @@ name: Email Outreach Cron
 on:
   schedule:
     # Run hourly 8am-10pm PT (16:00-06:00 UTC)
-    # Emails only send during business hours (9-5 PT, Mon-Fri) via code check.
+    # Emails only send during sending hours (9-5 PT, every day) via code check.
     # Extended hours ensure AI replies and notifications are processed evenings too.
     - cron: '0 16-23,0-6 * * *'
   workflow_dispatch:  # Allow manual trigger
@@ -48,6 +48,15 @@ jobs:
         run: |
           python sync_signups.py
 
+      - name: Enrich new leads (personalization)
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AI_MODEL: "google/gemini-2.0-flash-001"
+        run: python lead_enrichment.py --limit 20
+
       - name: Send emails and check responses
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
@@ -70,6 +79,13 @@ jobs:
         run: |
           python cron_runner.py --all
 
+      - name: Process bounces
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: python bounce_handler.py
+
       - name: AI auto-reply to new responses
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
@@ -84,6 +100,21 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python ai_responder.py
+
+      - name: Auto-nudge warm leads
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AI_MODEL: "google/gemini-2.0-flash-001"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NOTIFICATION_BCC_EMAIL: ${{ secrets.NOTIFICATION_BCC_EMAIL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TIMEZONE: America/Los_Angeles
+        run: python auto_nudge.py
 
       - name: Notify via Telegram
         env:

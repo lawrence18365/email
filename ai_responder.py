@@ -473,6 +473,18 @@ class AutoReplyScheduler:
     # the system tries for ~6 hours before giving up on a response.
     MAX_API_RETRIES = 6
 
+    def _add_to_suppression(self, email: str, reason: str):
+        """Add an email to the global suppression list."""
+        try:
+            from models import Suppression
+            existing = Suppression.query.filter_by(email=email.lower()).first()
+            if not existing:
+                self.db.session.add(Suppression(email=email.lower(), reason=reason))
+                self.db.session.commit()
+                logger.info(f"Added {email} to suppression list ({reason})")
+        except Exception as e:
+            logger.warning(f"Could not add {email} to suppression list: {e}")
+
     def process_pending_responses(self) -> int:
         """Process all unreviewed responses and send AI replies."""
         from models import Response, Lead, SentEmail, Inbox
@@ -729,8 +741,10 @@ class AutoReplyScheduler:
                             lead.status = 'meeting_booked'
                         elif intent == ResponseIntent.NOT_INTERESTED:
                             lead.status = 'not_interested'
+                            self._add_to_suppression(lead.email, 'not_interested')
                         elif intent == ResponseIntent.UNSUBSCRIBE:
                             lead.status = 'not_interested'
+                            self._add_to_suppression(lead.email, 'unsubscribed')
 
                         self.db.session.commit()
                         replies_sent += 1

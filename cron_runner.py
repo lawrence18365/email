@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 # Run lightweight migrations before any queries
 with app.app_context():
     _ensure_response_columns()
+    # Create any new tables (e.g. suppressions) that don't exist yet
+    db.create_all()
 
 
 # ─── Supabase signup check ───────────────────────────────────────────────
@@ -81,13 +83,10 @@ def is_already_signed_up(email: str) -> bool:
 
 
 def is_within_sending_hours():
-    """Check if current time is within allowed sending hours (Mon-Fri only)"""
+    """Check if current time is within allowed sending hours (every day)"""
     tz = ZoneInfo(Config.TIMEZONE)
     now = datetime.now(tz)
     hour = now.hour
-    # Only send outreach Mon-Fri (0=Monday, 6=Sunday)
-    if now.weekday() >= 5:
-        return False
     return Config.DEFAULT_SENDING_HOURS_START <= hour < Config.DEFAULT_SENDING_HOURS_END
 
 
@@ -143,6 +142,14 @@ def send_scheduled_emails():
                 lead = cl.lead
 
                 if lead.status == 'responded':
+                    continue
+
+                # Check global suppression list (prevents re-imported unsubs)
+                from models import Suppression
+                if Suppression.query.filter_by(email=lead.email.lower()).first():
+                    cl.status = 'stopped'
+                    db.session.commit()
+                    logger.info(f"Skipping {lead.email} — on suppression list")
                     continue
 
                 if lead.status != 'signed_up' and is_already_signed_up(lead.email):
@@ -451,6 +458,18 @@ def auto_reply():
             logger.error(f"Error in auto-reply job: {e}")
 
 
+def nudge_warm_leads():
+    """Run auto-nudge on warm leads who haven't signed up."""
+    logger.info("Starting auto-nudge job...")
+    with app.app_context():
+        try:
+            from auto_nudge import run_auto_nudge
+            count = run_auto_nudge()
+            logger.info(f"Auto-nudge job completed: {count} nudge(s) sent")
+        except Exception as e:
+            logger.error(f"Error in auto-nudge job: {e}")
+
+
 def force_process_pending():
     """Reset retry counters and force AI auto-reply on all unreviewed responses."""
     logger.info("FORCE MODE: Re-processing all pending responses...")
@@ -474,6 +493,7 @@ if __name__ == "__main__":
     parser.add_argument('--send', action='store_true', help='Send scheduled emails')
     parser.add_argument('--check', action='store_true', help='Check for responses')
     parser.add_argument('--reply', action='store_true', help='Run AI auto-reply')
+    parser.add_argument('--nudge', action='store_true', help='Run auto-nudge for warm leads')
     parser.add_argument('--all', action='store_true', help='Run all jobs')
     parser.add_argument('--force-reply', action='store_true', help='Force re-process all pending responses')
 
@@ -481,7 +501,7 @@ if __name__ == "__main__":
 
     if args.force_reply:
         force_process_pending()
-    elif args.all or (not args.send and not args.check and not args.reply):
+    elif args.all or (not args.send and not args.check and not args.reply and not args.nudge):
         send_scheduled_emails()
         check_responses()
         auto_reply()
@@ -492,5 +512,7 @@ if __name__ == "__main__":
             check_responses()
         if args.reply:
             auto_reply()
+        if args.nudge:
+            nudge_warm_leads()
 
     print("Done!")

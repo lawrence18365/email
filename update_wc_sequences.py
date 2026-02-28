@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Update shared email bodies and delay_days for all WC campaigns.
+Update shared email bodies and delay_days for Campaign A (control) only.
 
 Subject lines are NOT updated here — setup_ab_test.py handles per-variant
-subjects to preserve the A/B test. This script only updates:
-  - email_template (body text, shared across all variants)
-  - delay_days (step timing)
-  - Creates missing sequence steps
+subjects to preserve the A/B test.
+
+Campaigns B/C/D (conversation approach) are managed entirely by setup_ab_test.py.
+This script only touches Campaign A to avoid overwriting conversation templates.
 
 Run via: GitHub Actions → "Update WC Sequences" workflow_dispatch
-         (setup_ab_test.py runs after this to set per-variant subjects)
+         (setup_ab_test.py runs after this to set all variant configs)
 """
 
 import os
@@ -25,14 +25,15 @@ load_dotenv()
 from app import app
 from models import db, Campaign, Sequence
 
-# Shared email bodies and timing — subjects are set by setup_ab_test.py
-SEQUENCE_UPDATES = [
+# Control campaign bodies and timing (Campaign A only)
+CONTROL_SEQUENCE = [
     {
         "step_number": 1,
         "delay_days": 0,
         "default_subject": "founding member spot for {industry} counselors",
         "email_template": (
             "Hi {firstName|there},\n\n"
+            "{opener|I came across your practice and wanted to reach out.}\n\n"
             "I run WeddingCounselors.com — 5,000+ pages indexed by Google, all focused on "
             "premarital counseling. Couples in {industry} are already searching and finding "
             "counselors through us.\n\n"
@@ -92,7 +93,7 @@ SEQUENCE_UPDATES = [
     {
         "step_number": 4,
         "delay_days": 7,
-        "default_subject": "last note — {company|your listing}",
+        "default_subject": "last note — {firstName|your listing}",
         "email_template": (
             "Hi {firstName|there},\n\n"
             "I've reached out a few times about a founding member spot on WeddingCounselors.com — "
@@ -109,53 +110,50 @@ SEQUENCE_UPDATES = [
 
 
 def main():
-    print("Updating WC sequence bodies and timing...")
-    print("(Subject lines are handled by setup_ab_test.py to preserve A/B test)\n")
+    print("Updating Campaign A (control) bodies and timing...")
+    print("(Campaigns B/C/D managed by setup_ab_test.py — skipped here)\n")
 
     with app.app_context():
-        campaigns = Campaign.query.filter(
-            Campaign.name.ilike('%wedding%')
-        ).all()
-
-        if not campaigns:
-            print("ERROR: No Wedding Counselors campaigns found.")
+        # Only update Campaign 1 (control)
+        campaign = Campaign.query.get(1)
+        if not campaign:
+            print("ERROR: Campaign ID=1 not found.")
             sys.exit(1)
 
-        for campaign in campaigns:
-            print(f"Campaign: {campaign.name} (ID: {campaign.id}, Status: {campaign.status})")
+        print(f"Campaign: {campaign.name} (ID: {campaign.id}, Status: {campaign.status})")
 
-            for seq_data in SEQUENCE_UPDATES:
-                seq = Sequence.query.filter_by(
-                    campaign_id=campaign.id,
-                    step_number=seq_data["step_number"]
-                ).first()
+        for seq_data in CONTROL_SEQUENCE:
+            seq = Sequence.query.filter_by(
+                campaign_id=campaign.id,
+                step_number=seq_data["step_number"]
+            ).first()
 
-                if seq:
-                    changed = (
-                        seq.email_template != seq_data["email_template"] or
-                        seq.delay_days != seq_data["delay_days"]
-                    )
-                    if changed:
-                        seq.email_template = seq_data["email_template"]
-                        seq.delay_days = seq_data["delay_days"]
-                        db.session.commit()
-                        print(f"  Step {seq_data['step_number']}: UPDATED body/timing (subject unchanged: {seq.subject_template!r})")
-                    else:
-                        print(f"  Step {seq_data['step_number']}: OK (no changes needed)")
-                else:
-                    new_seq = Sequence(
-                        campaign_id=campaign.id,
-                        step_number=seq_data["step_number"],
-                        delay_days=seq_data["delay_days"],
-                        subject_template=seq_data["default_subject"],
-                        email_template=seq_data["email_template"],
-                        active=True,
-                    )
-                    db.session.add(new_seq)
+            if seq:
+                changed = (
+                    seq.email_template != seq_data["email_template"] or
+                    seq.delay_days != seq_data["delay_days"]
+                )
+                if changed:
+                    seq.email_template = seq_data["email_template"]
+                    seq.delay_days = seq_data["delay_days"]
                     db.session.commit()
-                    print(f"  Step {seq_data['step_number']}: CREATED (subject: {seq_data['default_subject']!r})")
+                    print(f"  Step {seq_data['step_number']}: UPDATED body/timing (subject unchanged: {seq.subject_template!r})")
+                else:
+                    print(f"  Step {seq_data['step_number']}: OK (no changes needed)")
+            else:
+                new_seq = Sequence(
+                    campaign_id=campaign.id,
+                    step_number=seq_data["step_number"],
+                    delay_days=seq_data["delay_days"],
+                    subject_template=seq_data["default_subject"],
+                    email_template=seq_data["email_template"],
+                    active=True,
+                )
+                db.session.add(new_seq)
+                db.session.commit()
+                print(f"  Step {seq_data['step_number']}: CREATED (subject: {seq_data['default_subject']!r})")
 
-    print("\nDone. setup_ab_test.py will set per-variant subject lines next.")
+    print("\nDone. setup_ab_test.py will configure all variants next.")
 
 
 if __name__ == "__main__":

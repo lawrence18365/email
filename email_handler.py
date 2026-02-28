@@ -381,13 +381,45 @@ class EmailReceiver:
                                 logger.error(f"Retry also failed for {msg_id}: {retry_err}")
 
                         except imaplib.IMAP4.abort as e:
-                            # IMAP connection aborted — reconnect and continue
+                            # IMAP connection aborted — reconnect and retry this message
                             logger.warning(f"IMAP abort fetching {msg_id}, reconnecting: {e}")
                             try:
                                 mail.logout()
                             except Exception:
                                 pass
                             mail = self._connect_imap(folder)
+                            try:
+                                status, msg_data = mail.fetch(msg_id, '(RFC822)')
+                                if status == 'OK':
+                                    email_body = msg_data[0][1]
+                                    email_message = email.message_from_bytes(email_body)
+                                    message_id = email_message.get('Message-ID', '').strip('<>')
+                                    if message_id not in seen_message_ids:
+                                        seen_message_ids.add(message_id)
+                                        in_reply_to = email_message.get('In-Reply-To', '').strip('<>')
+                                        references = email_message.get('References', '')
+                                        subject = self._decode_mime_header(email_message.get('Subject', ''))
+                                        from_addr = self._decode_mime_header(email_message.get('From', ''))
+                                        date_str = email_message.get('Date', '')
+                                        date = datetime.utcnow()
+                                        if date_str:
+                                            try:
+                                                date = email.utils.parsedate_to_datetime(date_str)
+                                            except:
+                                                pass
+                                        body = self._get_email_body(email_message)
+                                        responses.append({
+                                            'message_id': message_id,
+                                            'in_reply_to': in_reply_to,
+                                            'references': references,
+                                            'subject': subject,
+                                            'from': from_addr,
+                                            'body': body,
+                                            'date': date,
+                                            'folder': folder
+                                        })
+                            except Exception as retry_err:
+                                logger.error(f"Retry after IMAP abort also failed for {msg_id}: {retry_err}")
 
                         except Exception as e:
                             logger.error(f"Error processing message {msg_id}: {str(e)}")
@@ -489,6 +521,49 @@ class EmailPersonalizer:
     """Personalize email templates with lead data"""
 
     @staticmethod
+    def extract_site_name(url: str) -> str:
+        """Extract a human-friendly brand name from a website URL.
+
+        Examples:
+            https://www.katie-smith-counseling.com -> Katie Smith Counseling
+            smiththerapy.co.uk -> Smiththerapy
+            www.renewed-hearts.org/about -> Renewed Hearts
+        """
+        if not url:
+            return ''
+        # Skip social media and non-business URLs — let fallback text handle these
+        social_domains = (
+            'facebook.com', 'fb.com', 'instagram.com', 'tiktok.com',
+            'twitter.com', 'x.com', 'linkedin.com', 'youtube.com',
+            'pinterest.com', 'reddit.com', 'yelp.com', 'google.com',
+            'bdir.in', 'psychologytoday.com', 'goodtherapy.org',
+            'therapyden.com', 'zencare.co', 'betterhelp.com',
+            'journals.plos.org',
+        )
+        url_lower = url.lower()
+        if any(d in url_lower for d in social_domains):
+            return ''
+        # Strip protocol and www.
+        domain = re.sub(r'^https?://', '', url.strip().rstrip('/'))
+        domain = re.sub(r'^www\.', '', domain)
+        # Strip path, query, fragment
+        domain = domain.split('/')[0].split('?')[0].split('#')[0]
+        # Strip port
+        domain = domain.split(':')[0]
+        # Take the main domain part (drop TLD like .com, .org, .co.uk)
+        parts = domain.split('.')
+        # Handle .co.uk / .com.au style TLDs
+        if len(parts) >= 3 and parts[-2] in ('co', 'com', 'org', 'net'):
+            name_part = '.'.join(parts[:-2])
+        elif len(parts) >= 2:
+            name_part = '.'.join(parts[:-1])
+        else:
+            name_part = parts[0]
+        # Replace hyphens/underscores/dots with spaces and title-case
+        name = re.sub(r'[-_.]', ' ', name_part).strip()
+        return name.title() if name else ''
+
+    @staticmethod
     def personalize(template: str, lead) -> str:
         """
         Replace template variables with lead data
@@ -500,6 +575,8 @@ class EmailPersonalizer:
         - {email}
         - {company}
         - {website}
+        - {siteName} or {site_name} - human-friendly name extracted from website URL
+        - {domain} - clean domain (e.g. "smithcounseling.com")
         - {personalizedOpener} or {opener} - AI-generated personalized opener
         - {industry}
         - {title} or {jobTitle}
@@ -527,6 +604,14 @@ class EmailPersonalizer:
         if not opener and lead.company:
             opener = f"I came across {lead.company} and wanted to reach out."
 
+        # Extract clean domain and brand name from website URL
+        raw_website = lead.website or ''
+        site_name = EmailPersonalizer.extract_site_name(raw_website)
+        clean_domain = ''
+        if raw_website:
+            clean_domain = re.sub(r'^https?://(www\.)?', '', raw_website.strip().rstrip('/'))
+            clean_domain = clean_domain.split('/')[0].split('?')[0]
+
         # Build values dict for lookups
         values = {
             'firstName': lead.first_name or '',
@@ -537,7 +622,10 @@ class EmailPersonalizer:
             'full_name': lead.full_name or '',
             'email': lead.email or '',
             'company': lead.company or '',
-            'website': lead.website or '',
+            'website': raw_website,
+            'siteName': site_name,
+            'site_name': site_name,
+            'domain': clean_domain,
             'personalizedOpener': opener,
             'opener': opener,
             'industry': getattr(lead, 'industry', '') or '',

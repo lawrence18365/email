@@ -241,3 +241,16 @@ class SendingSchedule(db.Model):
 
     def __repr__(self):
         return f'<SendingSchedule inbox={self.inbox_id} hour={self.hour_of_day}>'
+
+
+class Suppression(db.Model):
+    """Global email suppression list — prevents re-imported leads from getting emailed"""
+    __tablename__ = 'suppressions'
+
+    id = db.Column(Integer, primary_key=True)
+    email = db.Column(String(255), unique=True, nullable=False, index=True)
+    reason = db.Column(String(100), nullable=False)  # unsubscribed, not_interested, bounced, complained
+    created_at = db.Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<Suppression {self.email}>'
