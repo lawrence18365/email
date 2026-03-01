@@ -68,20 +68,6 @@ def sync():
 
                     db.session.commit()
                     updated += 1
-                    continue
-
-                # Also check auth.users
-                result2 = sb.schema("auth").from_("users").select("id").ilike("email", lead.email.strip()).execute()
-                if result2.data:
-                    logger.info(f"SYNC: {lead.email} has auth account — updating from '{lead.status}'")
-                    lead.status = 'signed_up'
-
-                    active_cls = CampaignLead.query.filter_by(lead_id=lead.id, status='active').all()
-                    for cl in active_cls:
-                        cl.status = 'completed'
-
-                    db.session.commit()
-                    updated += 1
 
             except Exception as e:
                 logger.warning(f"Supabase check failed for {lead.email}: {e}")
