@@ -57,8 +57,7 @@ class BounceDetector:
         'mail delivery system',
         'bounce',
         'bounces',
-        'noreply',
-        'no-reply'
+        # Note: noreply/no-reply removed — too broad, catches legitimate auto-replies
     ]
     
     # Hard bounce patterns (permanent failures)
@@ -219,8 +218,8 @@ class BounceProcessor:
             mail = imaplib.IMAP4_SSL(inbox.imap_host, inbox.imap_port, timeout=30)
             mail.login(inbox.username, inbox.password)
             
-            # Try common bounce/spam folders
-            folders_to_check = ['Spam', 'Junk', 'Quarantine', 'Bounces', 'INBOX.Spam']
+            # Check INBOX (many bounces land here) plus spam/junk folders
+            folders_to_check = ['INBOX', 'Spam', 'Junk', '[Gmail]/Spam', 'Quarantine', 'Bounces', 'INBOX.Spam', 'INBOX.Junk']
             
             for folder in folders_to_check:
                 try:
@@ -506,11 +505,12 @@ def check_and_process_bounces(app, db):
         for inbox in inboxes:
             logger.info(f"Checking bounces for {inbox.email}...")
             bounces = processor.process_bounce_folder(inbox)
-            
+
             for bounce in bounces:
+                logger.info(f"Bounce detected: {bounce.email} ({bounce.bounce_type.value}) - {bounce.reason[:100]}")
                 processor.update_lead_status(bounce)
                 total_bounces.append(bounce)
-            
+
             logger.info(f"Found {len(bounces)} bounces in {inbox.email}")
         
         # Generate report

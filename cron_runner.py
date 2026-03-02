@@ -6,6 +6,8 @@ Runs email sending and response checking jobs.
 
 import os
 import sys
+import time
+import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -103,13 +105,17 @@ def send_scheduled_emails():
         personalizer = EmailPersonalizer()
 
         # Enforce daily send cap — use local timezone (not UTC) to match sending hours
+        # Only count cold outreach (non-reply) emails against the cap.
+        # AI replies (Re: subjects) have their own separate cap in ai_responder.py
         tz = ZoneInfo(Config.TIMEZONE)
         local_now = datetime.now(tz)
         local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
         today_start_utc = local_midnight.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
         sent_today = SentEmail.query.filter(
             SentEmail.sent_at >= today_start_utc,
-            SentEmail.status == 'sent'
+            SentEmail.status == 'sent',
+            ~SentEmail.subject.like('Re:%'),
+            ~SentEmail.subject.like('re:%')
         ).count()
         daily_cap = int(os.environ.get('DAILY_SEND_CAP', '25'))
         if sent_today >= daily_cap:
@@ -270,6 +276,12 @@ def send_scheduled_emails():
                     sent_per_campaign[cname] = sent_per_campaign.get(cname, 0) + 1
 
                     logger.info(f"Sent email to {lead.email} (campaign={campaign.id}, step {next_sequence.step_number})")
+
+                    # Random delay between sends to mimic human sending patterns
+                    # and avoid spam filter detection (30-90s range)
+                    delay = random.uniform(30, 90)
+                    logger.info(f"Waiting {delay:.0f}s before next send...")
+                    time.sleep(delay)
 
                     sent_this_run += 1
                     if sent_this_run >= remaining_today:

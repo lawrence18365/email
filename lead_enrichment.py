@@ -74,10 +74,12 @@ class LeadEnrichmentService:
         }
 
         try:
-            # Skip social media / directory URLs
+            # Skip social media / directory URLs — mark as enriched so they
+            # don't keep re-entering the queue every cron run
             website = lead.website or ''
             if any(d in website.lower() for d in SKIP_DOMAINS):
-                logger.info(f"Skipping {lead.email} — social/directory URL")
+                logger.info(f"Skipping {lead.email} — social/directory URL (marking enriched)")
+                enrichment["skipped_social"] = True
                 return enrichment
 
             # Step 1: Scrape practice website
@@ -269,6 +271,14 @@ def enrich_lead_in_db(app, db, lead_id: int) -> bool:
 
             db.session.commit()
             logger.info(f"Lead {lead_id} enriched successfully")
+            return True
+        elif enrichment.get("skipped_social"):
+            # Mark social/directory leads as enriched so they don't
+            # re-enter the queue every cron run
+            lead.enriched = True
+            lead.enriched_at = datetime.now(UTC)
+            db.session.commit()
+            logger.info(f"Lead {lead_id} marked enriched (social/directory URL — no data to scrape)")
             return True
         else:
             logger.warning(f"Lead {lead_id} enrichment returned no data")

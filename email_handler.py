@@ -563,6 +563,71 @@ class EmailPersonalizer:
         name = re.sub(r'[-_.]', ' ', name_part).strip()
         return name.title() if name else ''
 
+    # Words that are clearly not real first names (scraped from service/page titles).
+    # NOTE: Do NOT add real names like Hope, Faith, Grace — those are common first names.
+    GARBAGE_FIRST_NAMES = {
+        'marital', 'pre-marital', 'premarital', 'counseling', 'therapy',
+        'services', 'contact', 'home', 'about', 'marriage', 'couples',
+        'family', 'christian', 'church', 'parish', 'ministry', 'wedding',
+        'lovestrong', 'renewal', 'online', 'virtual', 'private',
+        'reverend', 'pastor', 'director', 'admin', 'staff', 'office',
+    }
+
+    @staticmethod
+    def _is_garbage_company(company: str) -> bool:
+        """Detect company names that are clearly scraped garbage, not real business names.
+
+        Returns True if the company name should NOT be used in email personalization.
+        """
+        if not company:
+            return True
+
+        c = company.strip()
+
+        # Too short or too long to be a real business name
+        if len(c) < 3 or len(c) > 80:
+            return True
+
+        c_lower = c.lower()
+
+        # Contains email addresses
+        if '@' in c_lower:
+            return True
+
+        # Looks like a date or page number
+        if re.match(r'^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d', c_lower):
+            return True
+        if re.match(r'^\d{4}[-/]?\d{0,2}[-/]?\d{0,2}$', c_lower.strip()):
+            return True
+        if re.search(r'page \d+ of \d+', c_lower):
+            return True
+
+        # Scraped page furniture / navigation
+        garbage_patterns = [
+            r'(^|\s)contact\s*form',
+            r'^(archives|contact\s*(us)?|about\s*(us|me)?|home|services?)$',
+            r'still looking for',
+            r'please email',
+            r'looking for recommendations',
+            r'^find\s+(a\s+)?',        # "Find a Therapist..."
+            r'^top \d+ best',           # "Top 10 Best Marriage Counseling..."
+            r'^search\s+results',
+            r'\.pdf$',                  # PDF filenames
+        ]
+        for pattern in garbage_patterns:
+            if re.search(pattern, c_lower):
+                return True
+
+        # Starts with common scraping artifacts
+        if c_lower.startswith(('i am a ', 'we are ', 'looking for ', 'still looking')):
+            return True
+
+        # Facebook/Instagram post snippets (usually have hashtags or are very long sentences)
+        if '#' in c and len(c) > 40:
+            return True
+
+        return False
+
     @staticmethod
     def personalize(template: str, lead) -> str:
         """
@@ -599,11 +664,6 @@ class EmailPersonalizer:
             suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
             deadline_str = deadline_date.strftime(f'%B {day}{suffix}')
 
-        # Get personalized opener or use fallback
-        opener = getattr(lead, 'personalized_opener', None) or ''
-        if not opener and lead.company:
-            opener = f"I came across {lead.company} and wanted to reach out."
-
         # Extract clean domain and brand name from website URL
         raw_website = lead.website or ''
         site_name = EmailPersonalizer.extract_site_name(raw_website)
@@ -612,10 +672,31 @@ class EmailPersonalizer:
             clean_domain = re.sub(r'^https?://(www\.)?', '', raw_website.strip().rstrip('/'))
             clean_domain = clean_domain.split('/')[0].split('?')[0]
 
+        # Get personalized opener — validate company name before using in fallback
+        opener = getattr(lead, 'personalized_opener', None) or ''
+        if not opener:
+            company = lead.company or ''
+            if company and not EmailPersonalizer._is_garbage_company(company):
+                # Company name looks legit — use it
+                opener = f"I came across {company} and wanted to reach out."
+            elif site_name:
+                # Fall back to cleaned domain name
+                opener = f"I came across {site_name} and wanted to reach out."
+            else:
+                # No usable company/site data — use generic
+                opener = "I came across your practice and had a quick question — do you work with couples before they get married, or mainly once they're already having issues?"
+
+        # Auto-fallback for missing first name: use "there" so
+        # templates render "Hi there" instead of "Hi " with a blank.
+        # Also reject names that are clearly scraped garbage
+        first_name = (lead.first_name or '').strip()
+        if first_name.lower() in EmailPersonalizer.GARBAGE_FIRST_NAMES:
+            first_name = ''
+
         # Build values dict for lookups
         values = {
-            'firstName': lead.first_name or '',
-            'first_name': lead.first_name or '',
+            'firstName': first_name,
+            'first_name': first_name,
             'lastName': lead.last_name or '',
             'last_name': lead.last_name or '',
             'fullName': lead.full_name or '',
@@ -649,5 +730,12 @@ class EmailPersonalizer:
         # Then handle standard replacements
         for var_name, value in values.items():
             result = result.replace('{' + var_name + '}', value)
+
+        # Auto-fix blank first names in common greeting patterns
+        # "Hi ," -> "Hi there," | "Hello ," -> "Hello there,"
+        if not first_name:
+            result = re.sub(r'(Hi|Hello|Hey)\s*,', r'\1 there,', result)
+            result = re.sub(r'(Hi|Hello|Hey)\s*!', r'\1 there!', result)
+            result = re.sub(r'(Hi|Hello|Hey)\s*\n', r'\1 there\n', result)
 
         return result

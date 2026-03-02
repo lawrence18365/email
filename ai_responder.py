@@ -485,6 +485,9 @@ class AutoReplyScheduler:
         except Exception as e:
             logger.warning(f"Could not add {email} to suppression list: {e}")
 
+    # Daily cap for AI replies (separate from cold outreach cap)
+    DAILY_REPLY_CAP = int(os.getenv('DAILY_REPLY_CAP', '20'))
+
     def process_pending_responses(self) -> int:
         """Process all unreviewed responses and send AI replies."""
         from models import Response, Lead, SentEmail, Inbox
@@ -493,8 +496,29 @@ class AutoReplyScheduler:
         replies_sent = 0
 
         with self.app.app_context():
+            # Check daily reply cap (separate from cold outreach)
+            from datetime import timedelta
+            from zoneinfo import ZoneInfo
+            tz_name = os.getenv('TIMEZONE', 'America/Los_Angeles')
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                tz = ZoneInfo('America/Los_Angeles')
+            local_now = datetime.now(tz)
+            local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start_utc = local_midnight.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
+            replies_today = SentEmail.query.filter(
+                SentEmail.sent_at >= today_start_utc,
+                SentEmail.status == 'sent',
+                (SentEmail.subject.like('Re:%') | SentEmail.subject.like('re:%'))
+            ).count()
+            if replies_today >= self.DAILY_REPLY_CAP:
+                logger.info(f"Daily reply cap reached ({replies_today}/{self.DAILY_REPLY_CAP}). Skipping AI replies.")
+                return 0
+            remaining_replies = self.DAILY_REPLY_CAP - replies_today
+
             pending = Response.query.filter_by(reviewed=False).all()
-            logger.info(f"Found {len(pending)} unreviewed responses")
+            logger.info(f"Found {len(pending)} unreviewed responses (reply budget: {remaining_replies})")
 
             for response in pending:
                 try:
@@ -750,6 +774,11 @@ class AutoReplyScheduler:
                         replies_sent += 1
 
                         logger.info(f"Auto-replied to {lead.email} (intent: {intent})")
+
+                        # Check daily reply cap
+                        if replies_sent >= remaining_replies:
+                            logger.info(f"Daily reply cap reached ({replies_today + replies_sent}/{self.DAILY_REPLY_CAP}). Stopping AI replies.")
+                            return replies_sent
 
                         # Send Telegram notification about the auto-reply
                         confidence = analysis.get('confidence', 0)
