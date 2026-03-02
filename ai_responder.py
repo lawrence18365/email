@@ -318,9 +318,15 @@ class AIResponder:
 
         # Clean body text for heuristic matching
         # First, strip quoted/forwarded email content (lines starting with >)
-        # and everything after "On ... wrote:" patterns (quoted replies)
+        # and everything after common reply-quoting patterns
         body_no_quotes = re.sub(r'(?m)^>.*$', '', body)  # remove > quoted lines
         body_no_quotes = re.sub(r'on\s+.{10,80}\s+wrote:\s*[\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)  # remove "On ... wrote:" and everything after
+        # Strip "From: Name <email>\nDate:" style quoting (Gmail, Apple Mail, etc.)
+        body_no_quotes = re.sub(r'from:\s*[^\n]*<[^>]+@[^>]+>[^\n]*\n\s*(?:date|sent|to|subject)[:\s][\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)
+        # Strip "-----Original Message-----" style quoting (Outlook)
+        body_no_quotes = re.sub(r'-{3,}\s*original\s+message\s*-{3,}[\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)
+        # Strip "---- Forwarded message ----" style quoting
+        body_no_quotes = re.sub(r'-{3,}\s*forwarded\s+message\s*-{3,}[\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)
         body_no_quotes = body_no_quotes.strip()
 
         # Strip email quoting, signatures, and whitespace
@@ -334,9 +340,25 @@ class AIResponder:
         word_count = len(body_clean.split())
         body_normalized = re.sub(r'[^\w\s]', '', body_clean).strip()
 
-        # Unsubscribe — check cleaned body only (not raw body with quoted footers)
-        # This prevents false positives from "Unsubscribe" links in quoted email footers
-        if any(x in body_clean for x in ['unsubscribe', 'remove me', 'opt out', 'stop emailing']):
+        # Unsubscribe — require first-person unsubscribe intent, not just the word
+        # appearing in quoted footers or passing references.
+        # Explicit requests: "unsubscribe me", "please remove me", "stop emailing me"
+        # NOT matched: "you can unsubscribe" (footer text), "unsubscribe link" (discussion)
+        unsub_patterns = [
+            r'\bunsubscribe\s+me\b',
+            r'\bplease\s+unsubscribe\b',
+            r'\bremove\s+me\b',
+            r'\btake\s+me\s+off\b',
+            r'\bopt\s+me\s+out\b',
+            r'\bstop\s+(?:emailing|sending|contacting)\s+me\b',
+            r'\bdon\'?t\s+(?:email|contact|send)\s+me\b',
+            r'\bdo\s+not\s+(?:email|contact|send)\b',
+            r'\bno\s+more\s+emails?\b',
+            r'\bstop\s+emailing\b',
+            r'\bi\s+want\s+(?:to\s+)?(?:unsubscribe|opt\s+out)\b',
+            r'^unsubscribe$',  # single word "unsubscribe" as the entire message
+        ]
+        if any(re.search(p, body_clean, re.IGNORECASE) for p in unsub_patterns):
             return {"intent": ResponseIntent.UNSUBSCRIBE, "sentiment": "negative",
                     "urgency": "high", "key_points": ["unsubscribe"], "confidence": 0.9}
 
