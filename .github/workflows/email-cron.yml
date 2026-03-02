@@ -57,13 +57,6 @@ jobs:
           AI_MODEL: "google/gemini-2.0-flash-001"
         run: python lead_enrichment.py --limit 50
 
-      - name: Pause underperforming campaigns (one-time migration)
-        env:
-          DATABASE_URI: ${{ secrets.DATABASE_URI }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          SECRET_KEY: ${{ secrets.SECRET_KEY }}
-        run: python pause_underperformers.py
-
       - name: Send emails and check responses
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
@@ -82,7 +75,8 @@ jobs:
           MAX_EMAILS_PER_HOUR: "8"
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"
-          DAILY_SEND_CAP: "50"
+          DAILY_SEND_CAP: "30"
+          GLOBAL_DAILY_CAP: "50"
         run: |
           python cron_runner.py --all
 
@@ -106,6 +100,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           DAILY_REPLY_CAP: "20"
+          GLOBAL_DAILY_CAP: "50"
           TIMEZONE: America/Los_Angeles
         run: |
           python ai_responder.py

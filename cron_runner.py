@@ -35,6 +35,15 @@ with app.app_context():
     # Create any new tables (e.g. suppressions) that don't exist yet
     db.create_all()
 
+    # One-time: pause underperforming campaigns B/C/D (0% reply rate)
+    # and reassign their active leads to Campaign A (10-55% reply rate).
+    # Safe to run repeatedly — exits instantly if already done.
+    try:
+        from pause_underperformers import main as _pause_underperformers
+        _pause_underperformers()
+    except Exception as e:
+        logger.warning(f"pause_underperformers skipped: {e}")
+
 
 # ─── Supabase signup check ───────────────────────────────────────────────
 # Query the Wedding Counselors website database to see if a lead already
@@ -104,20 +113,26 @@ def send_scheduled_emails():
         rate_limiter = RateLimiter(db.session)
         personalizer = EmailPersonalizer()
 
-        # Enforce daily send cap — use local timezone (not UTC) to match sending hours
-        # Only count cold outreach (non-reply) emails against the cap.
-        # AI replies (Re: subjects) have their own separate cap in ai_responder.py
+        # Enforce daily send cap — use local timezone (not UTC) to match sending hours.
+        # This cap applies to cold outreach sent by this function.
+        # AI replies have their own separate cap in ai_responder.py.
+        # We also enforce a global daily limit (cold + replies combined) to
+        # protect per-inbox reputation — total should stay under 50-60/day.
         tz = ZoneInfo(Config.TIMEZONE)
         local_now = datetime.now(tz)
         local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
         today_start_utc = local_midnight.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
-        sent_today = SentEmail.query.filter(
+        all_sent_today = SentEmail.query.filter(
             SentEmail.sent_at >= today_start_utc,
-            SentEmail.status == 'sent',
-            ~SentEmail.subject.like('Re:%'),
-            ~SentEmail.subject.like('re:%')
+            SentEmail.status == 'sent'
         ).count()
         daily_cap = int(os.environ.get('DAILY_SEND_CAP', '25'))
+        global_daily_cap = int(os.environ.get('GLOBAL_DAILY_CAP', '50'))
+        if all_sent_today >= global_daily_cap:
+            logger.info(f"Global daily cap reached ({all_sent_today}/{global_daily_cap} total emails). Stopping.")
+            return
+        # For cold outreach specifically, use the tighter daily_cap
+        sent_today = all_sent_today  # count all sends toward cold budget
         if sent_today >= daily_cap:
             logger.info(f"Daily send cap reached ({sent_today}/{daily_cap}). Stopping.")
             return

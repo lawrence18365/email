@@ -95,6 +95,64 @@ def check_telegram():
     return True, "Telegram configured"
 
 
+def check_dns_auth():
+    """Verify SPF, DKIM, and DMARC records are properly configured."""
+    import subprocess
+    from models import Inbox
+
+    inboxes = Inbox.query.filter_by(active=True).all()
+    if not inboxes:
+        return True, "No inboxes to check"
+
+    issues = []
+    for inbox in inboxes:
+        domain = inbox.email.split('@')[1]
+
+        # Check SPF
+        try:
+            result = subprocess.run(
+                ['dig', 'TXT', domain, '+short'],
+                capture_output=True, text=True, timeout=10
+            )
+            spf_records = [l for l in result.stdout.strip().split('\n') if 'v=spf1' in l]
+            if not spf_records:
+                issues.append(f"{domain}: No SPF record found")
+            elif '~all' in spf_records[0]:
+                issues.append(f"{domain}: SPF uses ~all (softfail) — change to -all for hardfail")
+        except Exception:
+            pass
+
+        # Check DMARC
+        try:
+            result = subprocess.run(
+                ['dig', 'TXT', f'_dmarc.{domain}', '+short'],
+                capture_output=True, text=True, timeout=10
+            )
+            dmarc = result.stdout.strip()
+            if not dmarc or 'v=DMARC1' not in dmarc:
+                issues.append(f"{domain}: No DMARC record found")
+            elif 'p=none' in dmarc:
+                issues.append(f"{domain}: DMARC policy is p=none — upgrade to p=quarantine or p=reject")
+        except Exception:
+            pass
+
+        # Check DKIM (spacemail selector)
+        try:
+            result = subprocess.run(
+                ['dig', 'TXT', f'spacemail._domainkey.{domain}', '+short'],
+                capture_output=True, text=True, timeout=10
+            )
+            dkim = result.stdout.strip()
+            if not dkim or 'v=DKIM1' not in dkim:
+                issues.append(f"{domain}: No DKIM record at spacemail._domainkey")
+        except Exception:
+            pass
+
+    if issues:
+        return False, "; ".join(issues)
+    return True, "SPF/DKIM/DMARC all configured"
+
+
 def check_pending_responses():
     """Check if there are unprocessed responses piling up (systemic failure indicator)."""
     from models import Response
@@ -135,6 +193,7 @@ def run_all_checks(warn_only=False):
         ("OpenRouter API", check_openrouter_api_key, True),
         ("Database", check_database, True),
         ("SMTP", check_smtp, True),
+        ("DNS Auth (SPF/DKIM/DMARC)", check_dns_auth, False),
         ("Telegram", check_telegram, False),
         ("Pending Responses", check_pending_responses, False),
     ]

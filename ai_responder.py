@@ -507,6 +507,17 @@ class AutoReplyScheduler:
             local_now = datetime.now(tz)
             local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
             today_start_utc = local_midnight.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
+            # Check global daily cap first (protects per-inbox reputation)
+            all_sent_today = SentEmail.query.filter(
+                SentEmail.sent_at >= today_start_utc,
+                SentEmail.status == 'sent'
+            ).count()
+            global_daily_cap = int(os.getenv('GLOBAL_DAILY_CAP', '50'))
+            if all_sent_today >= global_daily_cap:
+                logger.info(f"Global daily cap reached ({all_sent_today}/{global_daily_cap} total). Skipping AI replies.")
+                return 0
+
+            # Then check reply-specific cap
             replies_today = SentEmail.query.filter(
                 SentEmail.sent_at >= today_start_utc,
                 SentEmail.status == 'sent',
