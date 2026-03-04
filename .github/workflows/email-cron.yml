@@ -72,7 +72,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NOTIFICATION_BCC_EMAIL: ${{ secrets.NOTIFICATION_BCC_EMAIL }}
-          MAX_EMAILS_PER_HOUR: "8"
+          MAX_EMAILS_PER_HOUR: "25"
           SENDING_HOURS_START: "9"
           SENDING_HOURS_END: "17"
           DAILY_SEND_CAP: "100"
