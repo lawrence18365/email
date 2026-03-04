@@ -68,6 +68,7 @@ class ResponseIntent:
     SPAM = "spam"
     BOUNCE = "bounce"
     UNCLEAR = "unclear"
+    TECHNICAL_ISSUE = "technical_issue"
     CONVERSATION_COMPLETE = "conversation_complete"  # "thanks", "got it", etc.
 
 # Short, conversation-ending messages that don't need a reply.
@@ -182,12 +183,12 @@ Email body:
 {body}
 
 ---
-Classify as ONE of: interested, meeting_request, question, not_interested, unsubscribe, out_of_office, spam, bounce, unclear
+Classify as ONE of: interested, meeting_request, question, not_interested, unsubscribe, out_of_office, spam, bounce, unclear, technical_issue
 
 IMPORTANT classification rules:
-- If someone has signed up, is using the platform, reports a bug, gives feedback, or makes a suggestion → "interested" (they are an ACTIVE user)
+- If someone reports a bug, failed onboarding, site locking up, an error message, or frustration with signup, a form, or a technical issue → "technical_issue" (ESCALATE)
+- If someone has signed up (successfully), is using the platform, gives feedback, or makes a suggestion → "interested" (they are an ACTIVE user)
 - If someone says they'll do it later, "this week", or "soon" → "interested"
-- If someone reports frustration with signup, a form, or a technical issue → "question" (they need help)
 - If someone asks about cost, pricing, or what's included → "question"
 - Only use "unclear" if you genuinely cannot determine ANY intent from the message
 - Confidence should be 0.8+ for any message where the person is clearly engaged
@@ -534,7 +535,7 @@ class AutoReplyScheduler:
                 SentEmail.sent_at >= today_start_utc,
                 SentEmail.status == 'sent'
             ).count()
-            global_daily_cap = int(os.getenv('GLOBAL_DAILY_CAP', '50'))
+            global_daily_cap = int(os.getenv('GLOBAL_DAILY_CAP', '150'))
             if all_sent_today >= global_daily_cap:
                 logger.info(f"Global daily cap reached ({all_sent_today}/{global_daily_cap} total). Skipping AI replies.")
                 return 0
@@ -599,7 +600,17 @@ class AutoReplyScheduler:
                         response.notified = True
                         response.notes = f"AI: {intent} (confidence={confidence:.0%}) — needs human review"
                         self.db.session.commit()
-                        _notify_human_escalation(lead, '', intent=intent, confidence=confidence, response_obj=response)
+                        _notify_human_escalation(lead, 'Low confidence/Unclear', intent=intent, confidence=confidence, response_obj=response)
+                        continue
+
+                    # --- Guard: escalate technical issues to human ---
+                    if intent == ResponseIntent.TECHNICAL_ISSUE:
+                        logger.info(f"Technical issue reported by {lead.email}. Escalating to human.")
+                        response.reviewed = True
+                        response.notified = True
+                        response.notes = f"AI: {intent} — technical issue requires human review"
+                        self.db.session.commit()
+                        _notify_human_escalation(lead, 'Technical issue reported', intent=intent, confidence=confidence, response_obj=response)
                         continue
 
                     # --- Conversation-complete: mark reviewed, no reply ---

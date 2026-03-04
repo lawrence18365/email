@@ -62,10 +62,10 @@ def _parse_ooo_return(notes: str):
     return None
 
 
-NUDGE_COOLDOWN_DAYS = 7       # Min days between nudges to same lead
-NUDGE_MAX_PER_LEAD = 3        # Max total nudges per lead
+NUDGE_COOLDOWN_DAYS = 5       # Min days between nudges to same lead
+NUDGE_MAX_PER_LEAD = 6        # Max total nudges per lead
 NUDGE_MIN_AGE_DAYS = 3        # Min days since last interaction before nudging
-NUDGE_PER_RUN_CAP = 5         # Max nudges per cron run
+NUDGE_PER_RUN_CAP = 8         # Max nudges per cron run
 NUDGE_SENDING_HOURS = (9, 17) # 9am–5pm PT, ANY day of the week (warm leads)
 
 SIGNUP_LINK = (

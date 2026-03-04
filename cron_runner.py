@@ -127,7 +127,7 @@ def send_scheduled_emails():
             SentEmail.status == 'sent'
         ).count()
         daily_cap = int(os.environ.get('DAILY_SEND_CAP', '25'))
-        global_daily_cap = int(os.environ.get('GLOBAL_DAILY_CAP', '50'))
+        global_daily_cap = int(os.environ.get('GLOBAL_DAILY_CAP', '150'))
         if all_sent_today >= global_daily_cap:
             logger.info(f"Global daily cap reached ({all_sent_today}/{global_daily_cap} total emails). Stopping.")
             return
@@ -216,17 +216,47 @@ def send_scheduled_emails():
 
                 ready_by_campaign[campaign.id].append((campaign, cl, lead, next_sequence))
 
-        # ─── Phase 2: Interleave round-robin across campaigns ────────────
+        # ─── Phase 2: Prioritize step 1 (new leads) then interleave ─────
+        # Step 1 emails drive 86% of sign-ups, so send those first before
+        # burning daily cap on low-converting follow-ups (steps 2-4).
         from itertools import zip_longest
-        interleaved = []
-        campaign_queues = [q for q in ready_by_campaign.values() if q]
-        for batch in zip_longest(*campaign_queues):
+
+        step1_items = []
+        followup_items = []
+        for cid, items in ready_by_campaign.items():
+            for item in items:
+                _campaign, _cl, _lead, _seq = item
+                if _seq.step_number == 1:
+                    step1_items.append(item)
+                else:
+                    followup_items.append(item)
+
+        # Interleave step-1 items across campaigns for fairness
+        step1_by_campaign = {}
+        for item in step1_items:
+            cid = item[0].id
+            step1_by_campaign.setdefault(cid, []).append(item)
+        step1_interleaved = []
+        for batch in zip_longest(*step1_by_campaign.values()):
             for item in batch:
                 if item:
-                    interleaved.append(item)
+                    step1_interleaved.append(item)
+
+        # Then append follow-ups (also interleaved across campaigns)
+        followup_by_campaign = {}
+        for item in followup_items:
+            cid = item[0].id
+            followup_by_campaign.setdefault(cid, []).append(item)
+        followup_interleaved = []
+        for batch in zip_longest(*followup_by_campaign.values()):
+            for item in batch:
+                if item:
+                    followup_interleaved.append(item)
+
+        interleaved = step1_interleaved + followup_interleaved
 
         ready_counts = {cid: len(q) for cid, q in ready_by_campaign.items() if q}
-        logger.info(f"Round-robin collected {len(interleaved)} sendable items: {ready_counts}")
+        logger.info(f"Collected {len(interleaved)} sendable items ({len(step1_interleaved)} step-1, {len(followup_interleaved)} follow-ups): {ready_counts}")
 
         # ─── Phase 3: Send in interleaved order, respecting caps ─────────
         sent_per_campaign = {}  # track per-campaign for fairness logging
