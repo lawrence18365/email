@@ -564,6 +564,22 @@ def auto_reply():
             logger.error(f"Error in auto-reply job: {e}")
 
 
+def check_bounces():
+    """Check all inboxes for bounced emails and update lead statuses."""
+    logger.info("Starting bounce check job...")
+    with app.app_context():
+        try:
+            from bounce_handler import check_and_process_bounces
+            result = check_and_process_bounces(app, db)
+            bounces = result['bounces_found']
+            report = result['report']
+            logger.info(f"Bounce check complete: {bounces} new bounce(s), rate={report['bounce_rate_percent']}%")
+            if report['bounce_rate_percent'] > 5:
+                logger.warning(f"HIGH BOUNCE RATE: {report['bounce_rate_percent']}% — review list quality")
+        except Exception as e:
+            logger.error(f"Error in bounce check job: {e}")
+
+
 def nudge_warm_leads():
     """Run auto-nudge on warm leads who haven't signed up."""
     logger.info("Starting auto-nudge job...")
@@ -599,6 +615,7 @@ if __name__ == "__main__":
     parser.add_argument('--send', action='store_true', help='Send scheduled emails')
     parser.add_argument('--check', action='store_true', help='Check for responses')
     parser.add_argument('--reply', action='store_true', help='Run AI auto-reply')
+    parser.add_argument('--bounce', action='store_true', help='Check for bounced emails')
     parser.add_argument('--nudge', action='store_true', help='Run auto-nudge for warm leads')
     parser.add_argument('--all', action='store_true', help='Run all jobs')
     parser.add_argument('--force-reply', action='store_true', help='Force re-process all pending responses')
@@ -607,10 +624,11 @@ if __name__ == "__main__":
 
     if args.force_reply:
         force_process_pending()
-    elif args.all or (not args.send and not args.check and not args.reply and not args.nudge):
+    elif args.all or (not args.send and not args.check and not args.reply and not args.bounce and not args.nudge):
         send_scheduled_emails()
         check_responses()
         auto_reply()
+        check_bounces()
     else:
         if args.send:
             send_scheduled_emails()
@@ -618,6 +636,8 @@ if __name__ == "__main__":
             check_responses()
         if args.reply:
             auto_reply()
+        if args.bounce:
+            check_bounces()
         if args.nudge:
             nudge_warm_leads()
 
