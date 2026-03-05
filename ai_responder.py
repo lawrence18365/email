@@ -68,6 +68,7 @@ class ResponseIntent:
     SPAM = "spam"
     BOUNCE = "bounce"
     UNCLEAR = "unclear"
+    TECHNICAL_ISSUE = "technical_issue"
     CONVERSATION_COMPLETE = "conversation_complete"  # "thanks", "got it", etc.
 
 # Short, conversation-ending messages that don't need a reply.
@@ -123,6 +124,42 @@ QUESTION_PHRASES = [
 # Max words for short-message heuristic matching
 HEURISTIC_MAX_WORDS = 15
 
+# ─── Hard AI Gate: reply validation before send ──────────────────────────
+MIN_REPLY_WORDS = 10
+MAX_REPLY_LENGTH = 5000
+
+
+def validate_reply(reply_text, intent=''):
+    """
+    Hard gate: validate AI-generated reply before sending.
+    Returns (is_valid: bool, reason: str).
+
+    No code path should reach send_email() without passing this check.
+    """
+    if not reply_text or not reply_text.strip():
+        return False, "empty_or_none"
+
+    text = reply_text.strip()
+    word_count = len(text.split())
+
+    # Unsubscribe replies are short templates — relax word minimum
+    if intent == ResponseIntent.UNSUBSCRIBE:
+        if word_count < 5:
+            return False, f"too_short ({word_count} words)"
+        return True, "ok"
+
+    if word_count < MIN_REPLY_WORDS:
+        return False, f"too_short ({word_count} words, min {MIN_REPLY_WORDS})"
+
+    if len(text) > MAX_REPLY_LENGTH:
+        return False, f"too_long ({len(text)} chars, max {MAX_REPLY_LENGTH})"
+
+    # Reject raw JSON/markdown artifacts (AI sometimes outputs these)
+    if text.startswith('{') or text.startswith('```') or text.startswith('##'):
+        return False, "contains_artifacts"
+
+    return True, "ok"
+
 
 def _build_system_prompt(inbox_email: str = '') -> str:
     """Build system prompt with brand-appropriate context."""
@@ -146,12 +183,12 @@ Email body:
 {body}
 
 ---
-Classify as ONE of: interested, meeting_request, question, not_interested, unsubscribe, out_of_office, spam, bounce, unclear
+Classify as ONE of: interested, meeting_request, question, not_interested, unsubscribe, out_of_office, spam, bounce, unclear, technical_issue
 
 IMPORTANT classification rules:
-- If someone has signed up, is using the platform, reports a bug, gives feedback, or makes a suggestion → "interested" (they are an ACTIVE user)
+- If someone reports a bug, failed onboarding, site locking up, an error message, or frustration with signup, a form, or a technical issue → "technical_issue" (ESCALATE)
+- If someone has signed up (successfully), is using the platform, gives feedback, or makes a suggestion → "interested" (they are an ACTIVE user)
 - If someone says they'll do it later, "this week", or "soon" → "interested"
-- If someone reports frustration with signup, a form, or a technical issue → "question" (they need help)
 - If someone asks about cost, pricing, or what's included → "question"
 - Only use "unclear" if you genuinely cannot determine ANY intent from the message
 - Confidence should be 0.8+ for any message where the person is clearly engaged
@@ -243,7 +280,13 @@ class AIResponder:
                         continue
                     return None
                 elif resp.status_code == 429:
-                    wait = (attempt + 1) * 30
+                    # Dynamically respect Retry-After header if given
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after and retry_after.isdigit():
+                        wait = int(retry_after) + 1
+                    else:
+                        wait = (attempt + 1) * 30
+                        
                     logger.warning(f"OpenRouter rate limit (429), retry {attempt+1}/{max_retries} in {wait}s")
                     if attempt < max_retries - 1:
                         time.sleep(wait)
@@ -262,6 +305,30 @@ class AIResponder:
                 return None
 
         return None
+        
+    def _clean_email_body(self, body: str) -> str:
+        """Strip parsing artifacts, thread history, boilerplate, signatures, and URLs from email body."""
+        # First, strip quoted/forwarded email content (lines starting with >)
+        # and everything after common reply-quoting patterns
+        body_no_quotes = re.sub(r'(?m)^>.*$', '', body)  # remove > quoted lines
+        body_no_quotes = re.sub(r'on\s+.{10,80}\s+wrote:\s*[\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)  # remove "On ... wrote:" and everything after
+        # Strip "From: Name <email>\nDate:" style quoting (Gmail, Apple Mail, etc.)
+        body_no_quotes = re.sub(r'from:\s*[^\n]*<[^>]+@[^>]+>[^\n]*\n\s*(?:date|sent|to|subject)[:\s][\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)
+        # Strip "-----Original Message-----" style quoting (Outlook)
+        body_no_quotes = re.sub(r'-{3,}\s*original\s+message\s*-{3,}[\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)
+        # Strip "---- Forwarded message ----" style quoting
+        body_no_quotes = re.sub(r'-{3,}\s*forwarded\s+message\s*-{3,}[\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)
+        body_no_quotes = body_no_quotes.strip()
+
+        # Strip email quoting, signatures, and whitespace
+        body_clean = re.sub(r'[\>\s]+', ' ', body_no_quotes).strip()
+        body_clean = re.sub(r'\s*--?\s*$', '', body_clean)
+        body_clean = re.sub(r'(?:--|best|regards|sincerely|cheers|warm regards|notice:|confidential|disclaimer|this email|this message is intended)[\s\S]*$', '', body_clean, flags=re.IGNORECASE).strip()
+        # Also strip common email signature patterns (name, title, phone, URL lines)
+        body_clean = re.sub(r'(?:\*[^*]+\*\s*)+$', '', body_clean).strip()  # *Bold sig lines*
+        body_clean = re.sub(r'(?:https?://\S+\s*)+$', '', body_clean).strip()  # trailing URLs
+        body_clean = re.sub(r'[\d\.\-\(\)]{7,}\s*$', '', body_clean).strip()  # phone numbers
+        return body_clean
 
     def analyze_intent(self, email_data: Dict) -> Dict:
         """Analyze the intent of an incoming email."""
@@ -281,26 +348,29 @@ class AIResponder:
                     "urgency": "low", "key_points": ["ooo"], "confidence": 0.95}
 
         # Clean body text for heuristic matching
-        # First, strip quoted/forwarded email content (lines starting with >)
-        # and everything after "On ... wrote:" patterns (quoted replies)
-        body_no_quotes = re.sub(r'(?m)^>.*$', '', body)  # remove > quoted lines
-        body_no_quotes = re.sub(r'on\s+.{10,80}\s+wrote:\s*[\s\S]*$', '', body_no_quotes, flags=re.IGNORECASE)  # remove "On ... wrote:" and everything after
-        body_no_quotes = body_no_quotes.strip()
-
-        # Strip email quoting, signatures, and whitespace
-        body_clean = re.sub(r'[\>\s]+', ' ', body_no_quotes).strip()
-        body_clean = re.sub(r'\s*--?\s*$', '', body_clean)
-        body_clean = re.sub(r'(?:--|best|regards|sincerely|cheers|warm regards|notice:|confidential|disclaimer|this email|this message is intended)[\s\S]*$', '', body_clean, flags=re.IGNORECASE).strip()
-        # Also strip common email signature patterns (name, title, phone, URL lines)
-        body_clean = re.sub(r'(?:\*[^*]+\*\s*)+$', '', body_clean).strip()  # *Bold sig lines*
-        body_clean = re.sub(r'(?:https?://\S+\s*)+$', '', body_clean).strip()  # trailing URLs
-        body_clean = re.sub(r'[\d\.\-\(\)]{7,}\s*$', '', body_clean).strip()  # phone numbers
+        body_clean = self._clean_email_body(body)
         word_count = len(body_clean.split())
         body_normalized = re.sub(r'[^\w\s]', '', body_clean).strip()
 
-        # Unsubscribe — check cleaned body only (not raw body with quoted footers)
-        # This prevents false positives from "Unsubscribe" links in quoted email footers
-        if any(x in body_clean for x in ['unsubscribe', 'remove me', 'opt out', 'stop emailing']):
+        # Unsubscribe — require first-person unsubscribe intent, not just the word
+        # appearing in quoted footers or passing references.
+        # Explicit requests: "unsubscribe me", "please remove me", "stop emailing me"
+        # NOT matched: "you can unsubscribe" (footer text), "unsubscribe link" (discussion)
+        unsub_patterns = [
+            r'\bunsubscribe\s+me\b',
+            r'\bplease\s+unsubscribe\b',
+            r'\bremove\s+me\b',
+            r'\btake\s+me\s+off\b',
+            r'\bopt\s+me\s+out\b',
+            r'\bstop\s+(?:emailing|sending|contacting)\s+me\b',
+            r'\bdon\'?t\s+(?:email|contact|send)\s+me\b',
+            r'\bdo\s+not\s+(?:email|contact|send)\b',
+            r'\bno\s+more\s+emails?\b',
+            r'\bstop\s+emailing\b',
+            r'\bi\s+want\s+(?:to\s+)?(?:unsubscribe|opt\s+out)\b',
+            r'^unsubscribe$',  # single word "unsubscribe" as the entire message
+        ]
+        if any(re.search(p, body_clean, re.IGNORECASE) for p in unsub_patterns):
             return {"intent": ResponseIntent.UNSUBSCRIBE, "sentiment": "negative",
                     "urgency": "high", "key_points": ["unsubscribe"], "confidence": 0.9}
 
@@ -424,14 +494,6 @@ Apologies for the inconvenience.
             logger.info(f"Generated reply for {email_data['from_email']} (intent: {intent})")
         return reply
 
-    def should_auto_send(self, analysis: Dict) -> bool:
-        """Determine if reply should be auto-sent.
-        Always returns True when a reply was generated — never ghost a real person.
-        Spam/OOO/bounce are already filtered out in generate_reply() (returns None).
-        """
-        return True
-
-
 class AutoReplyScheduler:
     """Processes pending responses and sends AI replies."""
 
@@ -445,6 +507,21 @@ class AutoReplyScheduler:
     # the system tries for ~6 hours before giving up on a response.
     MAX_API_RETRIES = 6
 
+    def _add_to_suppression(self, email: str, reason: str):
+        """Add an email to the global suppression list."""
+        try:
+            from models import Suppression
+            existing = Suppression.query.filter_by(email=email.lower()).first()
+            if not existing:
+                self.db.session.add(Suppression(email=email.lower(), reason=reason))
+                self.db.session.commit()
+                logger.info(f"Added {email} to suppression list ({reason})")
+        except Exception as e:
+            logger.warning(f"Could not add {email} to suppression list: {e}")
+
+    # Daily cap for AI replies (separate from cold outreach cap)
+    DAILY_REPLY_CAP = int(os.getenv('DAILY_REPLY_CAP', '20'))
+
     def process_pending_responses(self) -> int:
         """Process all unreviewed responses and send AI replies."""
         from models import Response, Lead, SentEmail, Inbox
@@ -453,14 +530,47 @@ class AutoReplyScheduler:
         replies_sent = 0
 
         with self.app.app_context():
+            # Check daily reply cap (separate from cold outreach)
+            from datetime import timedelta
+            from zoneinfo import ZoneInfo
+            tz_name = os.getenv('TIMEZONE', 'America/Los_Angeles')
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                tz = ZoneInfo('America/Los_Angeles')
+            local_now = datetime.now(tz)
+            local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start_utc = local_midnight.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
+            # Check global daily cap first (protects per-inbox reputation)
+            all_sent_today = SentEmail.query.filter(
+                SentEmail.sent_at >= today_start_utc,
+                SentEmail.status == 'sent'
+            ).count()
+            global_daily_cap = int(os.getenv('GLOBAL_DAILY_CAP', '150'))
+            if all_sent_today >= global_daily_cap:
+                logger.info(f"Global daily cap reached ({all_sent_today}/{global_daily_cap} total). Skipping AI replies.")
+                return 0
+
+            # Then check reply-specific cap
+            replies_today = SentEmail.query.filter(
+                SentEmail.sent_at >= today_start_utc,
+                SentEmail.status == 'sent',
+                (SentEmail.subject.like('Re:%') | SentEmail.subject.like('re:%'))
+            ).count()
+            if replies_today >= self.DAILY_REPLY_CAP:
+                logger.info(f"Daily reply cap reached ({replies_today}/{self.DAILY_REPLY_CAP}). Skipping AI replies.")
+                return 0
+            remaining_replies = self.DAILY_REPLY_CAP - replies_today
+
             pending = Response.query.filter_by(reviewed=False).all()
-            logger.info(f"Found {len(pending)} unreviewed responses")
+            logger.info(f"Found {len(pending)} unreviewed responses (reply budget: {remaining_replies})")
 
             for response in pending:
                 try:
                     self.responder._last_error = None  # Reset for each response
 
                     lead = response.lead
+                    old_status = lead.status if lead else ''
                     if not lead:
                         response.reviewed = True
                         self.db.session.commit()
@@ -501,7 +611,17 @@ class AutoReplyScheduler:
                         response.notified = True
                         response.notes = f"AI: {intent} (confidence={confidence:.0%}) — needs human review"
                         self.db.session.commit()
-                        _notify_human_escalation(lead, f"Intent: {intent} (confidence: {confidence:.0%})\n\nSubject: {response.subject}\n\n{(response.body or '')[:500]}")
+                        _notify_human_escalation(lead, 'Low confidence/Unclear', intent=intent, confidence=confidence, response_obj=response)
+                        continue
+
+                    # --- Guard: escalate technical issues to human ---
+                    if intent == ResponseIntent.TECHNICAL_ISSUE:
+                        logger.info(f"Technical issue reported by {lead.email}. Escalating to human.")
+                        response.reviewed = True
+                        response.notified = True
+                        response.notes = f"AI: {intent} — technical issue requires human review"
+                        self.db.session.commit()
+                        _notify_human_escalation(lead, 'Technical issue reported', intent=intent, confidence=confidence, response_obj=response)
                         continue
 
                     # --- Conversation-complete: mark reviewed, no reply ---
@@ -541,6 +661,19 @@ class AutoReplyScheduler:
                             if seq:
                                 sequence_id = seq.id
 
+                    # Last-resort fallback: use any active campaign and its first sequence.
+                    # This handles replies to nudge emails sent outside the CRM pipeline.
+                    if not campaign_id or not sequence_id:
+                        from models import Campaign, Sequence
+                        fallback_campaign = Campaign.query.filter_by(status='active').first()
+                        if fallback_campaign:
+                            if not campaign_id:
+                                campaign_id = fallback_campaign.id
+                            fallback_seq = Sequence.query.filter_by(campaign_id=campaign_id).first()
+                            if fallback_seq and not sequence_id:
+                                sequence_id = fallback_seq.id
+                            logger.info(f"Using fallback campaign context for {lead.email} (campaign={campaign_id}, sequence={sequence_id})")
+
                     if not inbox or not campaign_id or not sequence_id:
                         logger.error(f"Missing inbox/campaign/sequence for reply to {lead.email}")
                         response.reviewed = True
@@ -577,6 +710,20 @@ class AutoReplyScheduler:
 
                     reply_text = self.responder.generate_reply(email_data, analysis, inbox_email=inbox_email, lead_deadline=lead_deadline)
 
+                    # ═══ HARD GATE: validate before sending ═══
+                    if reply_text:
+                        is_valid, reason = validate_reply(reply_text, intent)
+                        if not is_valid:
+                            logger.error(f"HARD GATE blocked reply to {lead.email}: {reason}")
+                            logger.error(f"HARD GATE rejected text: {reply_text[:200]!r}")
+                            _notify_failure(
+                                lead,
+                                f"AI reply blocked by quality gate: {reason}",
+                                step_info=f"reply to response #{response.id}"
+                            )
+                            reply_text = None
+                            self.responder._last_error = f"quality_gate_{reason}"
+
                     if not reply_text:
                         # Only mark reviewed if this was an intentional skip (OOO/spam/bounce),
                         # NOT if the API failed (rate limit, error). Check if the AI
@@ -598,7 +745,7 @@ class AutoReplyScheduler:
                                 response.notified = True
                                 response.notes = f"AI: API failed {retry_count}x ({was_api_failure}) — needs human review"
                                 self.db.session.commit()
-                                _notify_human_escalation(lead, f"AI couldn't process after {retry_count} attempts ({was_api_failure}).\n\nSubject: {response.subject}\n\n{(response.body or '')[:500]}")
+                                _notify_human_escalation(lead, '', intent=f'API failed {retry_count}x', confidence=0, response_obj=response)
                             else:
                                 response.notes = f"AI: api_retry={retry_count} ({was_api_failure})"
                                 self.db.session.commit()
@@ -625,7 +772,12 @@ class AutoReplyScheduler:
                         reply_to_id = response.message_id
                         if not reply_to_id.startswith('<'):
                             reply_to_id = f'<{reply_to_id}>'
-                    if sent_email and sent_email.message_id:
+                    
+                    if response.references:
+                        ref_chain = " ".join(response.references.split())
+                        if reply_to_id and reply_to_id not in ref_chain:
+                            ref_chain = f'{ref_chain} {reply_to_id}'
+                    elif sent_email and sent_email.message_id:
                         ref_chain = sent_email.message_id
                         if reply_to_id and reply_to_id != ref_chain:
                             ref_chain = f'{ref_chain} {reply_to_id}'
@@ -673,17 +825,26 @@ class AutoReplyScheduler:
                             lead.status = 'meeting_booked'
                         elif intent == ResponseIntent.NOT_INTERESTED:
                             lead.status = 'not_interested'
+                            self._add_to_suppression(lead.email, 'not_interested')
                         elif intent == ResponseIntent.UNSUBSCRIBE:
                             lead.status = 'not_interested'
+                            self._add_to_suppression(lead.email, 'unsubscribed')
 
                         self.db.session.commit()
                         replies_sent += 1
 
                         logger.info(f"Auto-replied to {lead.email} (intent: {intent})")
 
+                        # Check daily reply cap
+                        if replies_sent >= remaining_replies:
+                            logger.info(f"Daily reply cap reached ({replies_today + replies_sent}/{self.DAILY_REPLY_CAP}). Stopping AI replies.")
+                            return replies_sent
+
                         # Send Telegram notification about the auto-reply
                         confidence = analysis.get('confidence', 0)
-                        _notify_auto_reply(lead, intent, reply_text, confidence)
+                        _notify_auto_reply(lead, intent, reply_text, confidence,
+                                           their_message=response.body or '',
+                                           old_status=old_status)
 
                     else:
                         logger.error(f"Failed to send reply to {lead.email}: {error}")
@@ -691,7 +852,7 @@ class AutoReplyScheduler:
                         response.notified = True
                         response.notes = f"AI: {intent} — send FAILED: {error}"
                         self.db.session.commit()
-                        _notify_failure(lead, f"Send failed to {lead.email}: {error}")
+                        _notify_failure(lead, f"Send failed to {lead.email}: {error}", step_info=f"reply to response #{response.id}")
 
                 except Exception as e:
                     logger.error(f"Error processing response {response.id}: {str(e)}")
@@ -702,7 +863,7 @@ class AutoReplyScheduler:
         return replies_sent
 
 
-def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
+def _notify_auto_reply(lead, intent, reply_text, confidence=1.0, their_message='', old_status=''):
     """Send a Telegram notification when an AI reply is sent."""
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -710,26 +871,47 @@ def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
         if not token or not chat_id:
             return
 
-        full_reply = reply_text[:3000].replace('<', '&lt;').replace('>', '&gt;')
+        def _esc(s):
+            return (s or '').replace('<', '&lt;').replace('>', '&gt;')
+
         name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
         company = lead.company or ''
 
-        confidence_tag = ""
-        if confidence < 0.7:
-            confidence_tag = f"\n⚠️ <b>LOW CONFIDENCE ({confidence:.0%}) — please verify</b>"
+        # Short previews instead of full dumps
+        their_preview = _esc((their_message or '')[:150].strip())
+        if len(their_message or '') > 150:
+            their_preview += '...'
+        our_preview = _esc((reply_text or '')[:150].strip())
+        if len(reply_text or '') > 150:
+            our_preview += '...'
 
-        header = f"✅ <b>Auto-Reply Sent</b>{confidence_tag}"
-        who = f"→ {name}"
+        confidence_tag = f" ({confidence:.0%})"
+        low_conf = ""
+        if confidence < 0.7:
+            low_conf = "\n⚠️ <b>LOW CONFIDENCE — please verify</b>"
+
+        # Status change
+        new_status = lead.status or ''
+        status_line = ''
+        if old_status and old_status != new_status:
+            status_line = f"\nStatus: {old_status} → {new_status}"
+
+        who_line = _esc(name)
         if company:
-            who += f" ({company})"
-        who += f"\n📧 {lead.email}"
+            who_line += f" | {_esc(company)}"
 
         msg = (
-            f"{header}\n"
-            f"{who}\n"
-            f"🏷 {intent}\n\n"
-            f"{full_reply}"
+            f"✅ <b>AUTO-REPLY SENT</b>{low_conf}\n\n"
+            f"<b>{who_line}</b>\n"
+            f"{lead.email} | {intent}{confidence_tag}\n"
         )
+
+        if their_preview:
+            msg += f"\nThem: \"{their_preview}\"\n"
+        msg += f"Us: \"{our_preview}\"\n"
+
+        if status_line:
+            msg += status_line
 
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -740,7 +922,7 @@ def _notify_auto_reply(lead, intent, reply_text, confidence=1.0):
         logger.warning(f"Telegram notify failed: {e}")
 
 
-def _notify_human_escalation(lead, reason):
+def _notify_human_escalation(lead, reason, intent='', confidence=0, response_obj=None):
     """Send Telegram notification when a response needs manual handling."""
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -748,20 +930,62 @@ def _notify_human_escalation(lead, reason):
         if not token or not chat_id:
             return
 
+        def _esc(s):
+            return (s or '').replace('<', '&lt;').replace('>', '&gt;')
+
         name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
         company = lead.company or ''
-        reason_safe = reason[:1500].replace('<', '&lt;').replace('>', '&gt;')
 
-        who = f"→ {name}"
+        who_line = _esc(name)
         if company:
-            who += f" ({company})"
-        who += f"\n📧 {lead.email}"
+            who_line += f" | {_esc(company)}"
 
-        msg = (
-            f"🔴 <b>Needs Your Reply</b>\n"
-            f"{who}\n\n"
-            f"{reason_safe}"
-        )
+        # Calculate wait time
+        wait_str = ''
+        if response_obj and hasattr(response_obj, 'received_at') and response_obj.received_at:
+            delta = datetime.utcnow() - response_obj.received_at
+            hours = int(delta.total_seconds() / 3600)
+            if hours >= 24:
+                wait_str = f"{hours // 24}d {hours % 24}h"
+            else:
+                wait_str = f"{hours}h"
+
+        intent_line = ''
+        if intent:
+            intent_line = f"Intent: {intent} ({confidence:.0%})"
+            if wait_str:
+                intent_line += f" | Waiting: {wait_str}"
+
+        # Extract body preview from reason (find the body part after Subject: line)
+        body_preview = ''
+        if response_obj and response_obj.body:
+            body_preview = _esc(response_obj.body[:300].strip())
+            if len(response_obj.body) > 300:
+                body_preview += '...'
+
+        # Suggest action based on body content
+        body_lower = (response_obj.body or '').lower() if response_obj else ''
+        suggested = ''
+        if any(w in body_lower for w in ['phone', 'call me', 'call you', 'touch base', 'speak with']):
+            suggested = 'Phone call requested — send your number'
+        elif any(w in body_lower for w in ['bug', 'error', 'broken', 'not working', "doesn't work", "can't"]):
+            suggested = 'Technical issue — investigate and respond'
+        elif any(w in body_lower for w in ['cost', 'price', 'pricing', 'how much', 'fee']):
+            suggested = 'Pricing question — check context doc'
+        elif any(w in body_lower for w in ['who are you', 'what is this', 'what company']):
+            suggested = 'Confused about us — send intro explanation'
+
+        msg = f"🔴 <b>NEEDS YOUR REPLY</b>\n\n"
+        msg += f"<b>{who_line}</b>\n"
+        msg += f"{lead.email}\n"
+        if intent_line:
+            msg += f"{intent_line}\n"
+
+        if body_preview:
+            msg += f"\n\"{body_preview}\"\n"
+
+        if suggested:
+            msg += f"\n💡 <b>Suggested:</b> {suggested}"
 
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -772,7 +996,7 @@ def _notify_human_escalation(lead, reason):
         logger.warning(f"Telegram escalation notify failed: {e}")
 
 
-def _notify_failure(lead, error_msg):
+def _notify_failure(lead, error_msg, step_info=''):
     """Send Telegram notification when AI reply fails."""
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -780,14 +1004,27 @@ def _notify_failure(lead, error_msg):
         if not token or not chat_id:
             return
 
-        email = lead.email if lead else "unknown"
-        error_short = error_msg[:200].replace('<', '&lt;').replace('>', '&gt;')
+        def _esc(s):
+            return (s or '').replace('<', '&lt;').replace('>', '&gt;')
 
-        msg = (
-            f"<b>AI Reply Failed</b>\n\n"
-            f"<b>Lead:</b> {email}\n"
-            f"<b>Error:</b> {error_short}"
-        )
+        email = lead.email if lead else "unknown"
+        name = ''
+        company = ''
+        if lead:
+            name = f"{lead.first_name or ''} {lead.last_name or ''}".strip()
+            company = lead.company or ''
+        error_short = _esc(error_msg[:300])
+
+        who_line = _esc(name) if name else email
+        if company:
+            who_line += f" | {_esc(company)}"
+
+        msg = f"⚠️ <b>AI REPLY FAILED</b>\n\n"
+        msg += f"<b>{who_line}</b>\n"
+        msg += f"{email}\n"
+        if step_info:
+            msg += f"Step: {_esc(step_info)}\n"
+        msg += f"\nError: {error_short}"
 
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",

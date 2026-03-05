@@ -229,9 +229,42 @@ class EmailReceiver:
         self.username = inbox.username
         self.password = inbox.password
 
+    # Folders to scan for replies (INBOX + common spam/junk folder names)
+    SCAN_FOLDERS = ['INBOX', 'Junk', 'Spam', '[Gmail]/Spam', 'INBOX.Junk', 'INBOX.Spam']
+
+    def _connect_imap(self, folder='INBOX'):
+        """Create and authenticate a fresh IMAP connection."""
+        if self.imap_use_ssl:
+            mail = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=60)
+        else:
+            mail = imaplib.IMAP4(self.imap_host, self.imap_port, timeout=60)
+        mail.login(self.username, self.password)
+        mail.select(folder)
+        return mail
+
+    def _fetch_message_with_retry(self, mail, msg_id, folder, max_retries=2):
+        """Fetch a single message with automatic reconnection on socket/abort errors."""
+        for attempt in range(max_retries):
+            try:
+                status, msg_data = mail.fetch(msg_id, '(RFC822)')
+                if status == 'OK':
+                    return mail, msg_data
+            except (ConnectionResetError, BrokenPipeError, OSError, imaplib.IMAP4.abort) as e:
+                logger.warning(f"Connection lost fetching {msg_id} (attempt {attempt+1}), reconnecting: {e}")
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
+                if attempt < max_retries - 1:
+                    mail = self._connect_imap(folder)
+            except Exception as e:
+                logger.error(f"Unexpected error fetching message {msg_id}: {str(e)}")
+                break
+        return mail, None
+
     def fetch_new_responses(self) -> List[Dict]:
         """
-        Fetch recent emails from inbox (last 3 days).
+        Fetch recent emails from inbox (last 14 days).
 
         Uses SINCE date filter instead of UNSEEN so that emails read
         in another mail client are still picked up.  Duplicate prevention
@@ -240,82 +273,106 @@ class EmailReceiver:
         Returns list of dicts with keys: message_id, in_reply_to, subject, body, date
         """
         responses = []
+        seen_message_ids = set()
 
-        try:
-            # Connect to IMAP
-            if self.imap_use_ssl:
-                mail = imaplib.IMAP4_SSL(self.imap_host, self.imap_port, timeout=30)
-            else:
-                mail = imaplib.IMAP4(self.imap_host, self.imap_port, timeout=30)
+        for folder in self.SCAN_FOLDERS:
+            try:
+                mail = self._connect_imap(folder)
+            except imaplib.IMAP4.error:
+                # Folder doesn't exist on this server — skip silently
+                continue
+            except Exception:
+                continue
 
-            mail.login(self.username, self.password)
-            mail.select('INBOX')
+            try:
+                # Search for messages from the last 14 days (catches read emails too)
+                # Extended from 3 days to survive cron outages without losing replies
+                since_date = (datetime.utcnow() - timedelta(days=14)).strftime('%d-%b-%Y')
+                status, messages = mail.search(None, f'SINCE {since_date}')
 
-            # Search for messages from the last 3 days (catches read emails too)
-            since_date = (datetime.utcnow() - timedelta(days=3)).strftime('%d-%b-%Y')
-            status, messages = mail.search(None, f'SINCE {since_date}')
-
-            if status != 'OK':
-                logger.warning(f"No unread messages found in {self.inbox.email}")
-                mail.logout()
-                return responses
-
-            message_ids = messages[0].split()
-
-            for msg_id in message_ids:
-                try:
-                    # Fetch email
-                    status, msg_data = mail.fetch(msg_id, '(RFC822)')
-
-                    if status != 'OK':
-                        continue
-
-                    # Parse email
-                    email_body = msg_data[0][1]
-                    email_message = email.message_from_bytes(email_body)
-
-                    # Extract headers
-                    message_id = email_message.get('Message-ID', '').strip('<>')
-                    in_reply_to = email_message.get('In-Reply-To', '').strip('<>')
-                    references = email_message.get('References', '')
-                    subject = email_message.get('Subject', '')
-                    from_addr = email_message.get('From', '')
-                    date_str = email_message.get('Date', '')
-
-                    # Parse date
-                    date = datetime.utcnow()
-                    if date_str:
-                        try:
-                            date = email.utils.parsedate_to_datetime(date_str)
-                        except:
-                            pass
-
-                    # Extract body
-                    body = self._get_email_body(email_message)
-
-                    responses.append({
-                        'message_id': message_id,
-                        'in_reply_to': in_reply_to,
-                        'references': references,
-                        'subject': subject,
-                        'from': from_addr,
-                        'body': body,
-                        'date': date
-                    })
-
-                except Exception as e:
-                    logger.error(f"Error processing message {msg_id}: {str(e)}")
+                if status != 'OK' or not messages[0].strip():
+                    try:
+                        mail.logout()
+                    except Exception:
+                        pass
                     continue
 
-            mail.logout()
-            logger.info(f"Fetched {len(responses)} new responses from {self.inbox.email}")
+                message_ids = messages[0].split()
 
-        except imaplib.IMAP4.error as e:
-            logger.error(f"IMAP error for {self.inbox.email}: {str(e)}")
+                # Process messages in batches to avoid IMAP connection timeouts
+                BATCH_SIZE = 25
+                for batch_start in range(0, len(message_ids), BATCH_SIZE):
+                    batch = message_ids[batch_start:batch_start + BATCH_SIZE]
 
-        except Exception as e:
-            logger.error(f"Unexpected error fetching emails from {self.inbox.email}: {str(e)}")
+                    # Reconnect for each batch to prevent socket EOF errors
+                    if batch_start > 0:
+                        try:
+                            mail.logout()
+                        except Exception:
+                            pass
+                        mail = self._connect_imap(folder)
 
+                    for msg_id in batch:
+                        mail, msg_data = self._fetch_message_with_retry(mail, msg_id, folder)
+                        if not msg_data:
+                            continue
+
+                        try:
+                            # Parse email
+                            email_body = msg_data[0][1]
+                            email_message = email.message_from_bytes(email_body)
+
+                            # Extract headers
+                            message_id = email_message.get('Message-ID', '').strip('<>')
+                            in_reply_to = email_message.get('In-Reply-To', '').strip('<>')
+                            references = email_message.get('References', '')
+                            subject = self._decode_mime_header(email_message.get('Subject', ''))
+                            from_addr = self._decode_mime_header(email_message.get('From', ''))
+                            date_str = email_message.get('Date', '')
+
+                            # Deduplicate across folders (same email in INBOX and Junk)
+                            if message_id in seen_message_ids:
+                                continue
+                            seen_message_ids.add(message_id)
+
+                            # Parse date
+                            date = datetime.utcnow()
+                            if date_str:
+                                try:
+                                    date = email.utils.parsedate_to_datetime(date_str)
+                                except:
+                                    pass
+
+                            # Extract body
+                            body = self._get_email_body(email_message)
+
+                            responses.append({
+                                'message_id': message_id,
+                                'in_reply_to': in_reply_to,
+                                'references': references,
+                                'subject': subject,
+                                'from': from_addr,
+                                'body': body,
+                                'date': date,
+                                'folder': folder
+                            })
+
+                        except Exception as e:
+                            logger.error(f"Error parsing message {msg_id}: {str(e)}")
+                            continue
+
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
+
+            except imaplib.IMAP4.error as e:
+                logger.error(f"IMAP error for {self.inbox.email} folder {folder}: {str(e)}")
+
+            except Exception as e:
+                logger.error(f"Unexpected error fetching from {self.inbox.email} folder {folder}: {str(e)}")
+
+        logger.info(f"Fetched {len(responses)} new responses from {self.inbox.email} (scanned {len(self.SCAN_FOLDERS)} folders)")
         return responses
 
     def _get_email_body(self, email_message) -> str:
@@ -352,6 +409,23 @@ class EmailReceiver:
 
         return body.strip()
 
+    def _decode_mime_header(self, value: str) -> str:
+        """Decode MIME-encoded headers into readable UTF-8 text."""
+        if not value:
+            return ""
+
+        parts = email.header.decode_header(value)
+        decoded = []
+        for part, charset in parts:
+            if isinstance(part, bytes):
+                try:
+                    decoded.append(part.decode(charset or 'utf-8', errors='ignore'))
+                except Exception:
+                    decoded.append(part.decode('utf-8', errors='ignore'))
+            else:
+                decoded.append(part)
+        return "".join(decoded)
+
     def _html_to_plain(self, html: str) -> str:
         """Convert HTML to plain text (basic)"""
         text = re.sub(r'<[^>]+>', '', html)
@@ -383,6 +457,114 @@ class EmailPersonalizer:
     """Personalize email templates with lead data"""
 
     @staticmethod
+    def extract_site_name(url: str) -> str:
+        """Extract a human-friendly brand name from a website URL.
+
+        Examples:
+            https://www.katie-smith-counseling.com -> Katie Smith Counseling
+            smiththerapy.co.uk -> Smiththerapy
+            www.renewed-hearts.org/about -> Renewed Hearts
+        """
+        if not url:
+            return ''
+        # Skip social media and non-business URLs — let fallback text handle these
+        social_domains = (
+            'facebook.com', 'fb.com', 'instagram.com', 'tiktok.com',
+            'twitter.com', 'x.com', 'linkedin.com', 'youtube.com',
+            'pinterest.com', 'reddit.com', 'yelp.com', 'google.com',
+            'bdir.in', 'psychologytoday.com', 'goodtherapy.org',
+            'therapyden.com', 'zencare.co', 'betterhelp.com',
+            'journals.plos.org',
+        )
+        url_lower = url.lower()
+        if any(d in url_lower for d in social_domains):
+            return ''
+        # Strip protocol and www.
+        domain = re.sub(r'^https?://', '', url.strip().rstrip('/'))
+        domain = re.sub(r'^www\.', '', domain)
+        # Strip path, query, fragment
+        domain = domain.split('/')[0].split('?')[0].split('#')[0]
+        # Strip port
+        domain = domain.split(':')[0]
+        # Take the main domain part (drop TLD like .com, .org, .co.uk)
+        parts = domain.split('.')
+        # Handle .co.uk / .com.au style TLDs
+        if len(parts) >= 3 and parts[-2] in ('co', 'com', 'org', 'net'):
+            name_part = '.'.join(parts[:-2])
+        elif len(parts) >= 2:
+            name_part = '.'.join(parts[:-1])
+        else:
+            name_part = parts[0]
+        # Replace hyphens/underscores/dots with spaces and title-case
+        name = re.sub(r'[-_.]', ' ', name_part).strip()
+        return name.title() if name else ''
+
+    # Words that are clearly not real first names (scraped from service/page titles).
+    # NOTE: Do NOT add real names like Hope, Faith, Grace — those are common first names.
+    GARBAGE_FIRST_NAMES = {
+        'marital', 'pre-marital', 'premarital', 'counseling', 'therapy',
+        'services', 'contact', 'home', 'about', 'marriage', 'couples',
+        'family', 'christian', 'church', 'parish', 'ministry', 'wedding',
+        'lovestrong', 'renewal', 'online', 'virtual', 'private',
+        'reverend', 'pastor', 'director', 'admin', 'staff', 'office',
+    }
+
+    @staticmethod
+    def _is_garbage_company(company: str) -> bool:
+        """Detect company names that are clearly scraped garbage, not real business names.
+
+        Returns True if the company name should NOT be used in email personalization.
+        """
+        if not company:
+            return True
+
+        c = company.strip()
+
+        # Too short or too long to be a real business name
+        if len(c) < 3 or len(c) > 80:
+            return True
+
+        c_lower = c.lower()
+
+        # Contains email addresses
+        if '@' in c_lower:
+            return True
+
+        # Looks like a date or page number
+        if re.match(r'^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d', c_lower):
+            return True
+        if re.match(r'^\d{4}[-/]?\d{0,2}[-/]?\d{0,2}$', c_lower.strip()):
+            return True
+        if re.search(r'page \d+ of \d+', c_lower):
+            return True
+
+        # Scraped page furniture / navigation
+        garbage_patterns = [
+            r'(^|\s)contact\s*form',
+            r'^(archives|contact\s*(us)?|about\s*(us|me)?|home|services?)$',
+            r'still looking for',
+            r'please email',
+            r'looking for recommendations',
+            r'^find\s+(a\s+)?',        # "Find a Therapist..."
+            r'^top \d+ best',           # "Top 10 Best Marriage Counseling..."
+            r'^search\s+results',
+            r'\.pdf$',                  # PDF filenames
+        ]
+        for pattern in garbage_patterns:
+            if re.search(pattern, c_lower):
+                return True
+
+        # Starts with common scraping artifacts
+        if c_lower.startswith(('i am a ', 'we are ', 'looking for ', 'still looking')):
+            return True
+
+        # Facebook/Instagram post snippets (usually have hashtags or are very long sentences)
+        if '#' in c and len(c) > 40:
+            return True
+
+        return False
+
+    @staticmethod
     def personalize(template: str, lead) -> str:
         """
         Replace template variables with lead data
@@ -394,6 +576,8 @@ class EmailPersonalizer:
         - {email}
         - {company}
         - {website}
+        - {siteName} or {site_name} - human-friendly name extracted from website URL
+        - {domain} - clean domain (e.g. "smithcounseling.com")
         - {personalizedOpener} or {opener} - AI-generated personalized opener
         - {industry}
         - {title} or {jobTitle}
@@ -416,22 +600,49 @@ class EmailPersonalizer:
             suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
             deadline_str = deadline_date.strftime(f'%B {day}{suffix}')
 
-        # Get personalized opener or use fallback
+        # Extract clean domain and brand name from website URL
+        raw_website = lead.website or ''
+        site_name = EmailPersonalizer.extract_site_name(raw_website)
+        clean_domain = ''
+        if raw_website:
+            clean_domain = re.sub(r'^https?://(www\.)?', '', raw_website.strip().rstrip('/'))
+            clean_domain = clean_domain.split('/')[0].split('?')[0]
+
+        # Get personalized opener — validate company name before using in fallback
         opener = getattr(lead, 'personalized_opener', None) or ''
-        if not opener and lead.company:
-            opener = f"I came across {lead.company} and wanted to reach out."
+        if not opener:
+            company = lead.company or ''
+            if company and not EmailPersonalizer._is_garbage_company(company):
+                # Company name looks legit — use it
+                opener = f"I came across {company} and wanted to reach out."
+            elif site_name:
+                # Fall back to cleaned domain name
+                opener = f"I came across {site_name} and wanted to reach out."
+            else:
+                # No usable company/site data — use generic
+                opener = "I came across your practice and had a quick question — do you work with couples before they get married, or mainly once they're already having issues?"
+
+        # Auto-fallback for missing first name: use "there" so
+        # templates render "Hi there" instead of "Hi " with a blank.
+        # Also reject names that are clearly scraped garbage
+        first_name = (lead.first_name or '').strip()
+        if first_name.lower() in EmailPersonalizer.GARBAGE_FIRST_NAMES:
+            first_name = ''
 
         # Build values dict for lookups
         values = {
-            'firstName': lead.first_name or '',
-            'first_name': lead.first_name or '',
+            'firstName': first_name,
+            'first_name': first_name,
             'lastName': lead.last_name or '',
             'last_name': lead.last_name or '',
             'fullName': lead.full_name or '',
             'full_name': lead.full_name or '',
             'email': lead.email or '',
             'company': lead.company or '',
-            'website': lead.website or '',
+            'website': raw_website,
+            'siteName': site_name,
+            'site_name': site_name,
+            'domain': clean_domain,
             'personalizedOpener': opener,
             'opener': opener,
             'industry': getattr(lead, 'industry', '') or '',
@@ -455,5 +666,12 @@ class EmailPersonalizer:
         # Then handle standard replacements
         for var_name, value in values.items():
             result = result.replace('{' + var_name + '}', value)
+
+        # Auto-fix blank first names in common greeting patterns
+        # "Hi ," -> "Hi there," | "Hello ," -> "Hello there,"
+        if not first_name:
+            result = re.sub(r'(Hi|Hello|Hey)\s*,', r'\1 there,', result)
+            result = re.sub(r'(Hi|Hello|Hey)\s*!', r'\1 there!', result)
+            result = re.sub(r'(Hi|Hello|Hey)\s*\n', r'\1 there\n', result)
 
         return result

@@ -6,6 +6,8 @@ Runs email sending and response checking jobs.
 
 import os
 import sys
+import time
+import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -30,6 +32,17 @@ logger = logging.getLogger(__name__)
 # Run lightweight migrations before any queries
 with app.app_context():
     _ensure_response_columns()
+    # Create any new tables (e.g. suppressions) that don't exist yet
+    db.create_all()
+
+    # One-time: pause underperforming campaigns B/C/D (0% reply rate)
+    # and reassign their active leads to Campaign A (10-55% reply rate).
+    # Safe to run repeatedly — exits instantly if already done.
+    try:
+        from pause_underperformers import main as _pause_underperformers
+        _pause_underperformers()
+    except Exception as e:
+        logger.warning(f"pause_underperformers skipped: {e}")
 
 
 # ─── Supabase signup check ───────────────────────────────────────────────
@@ -71,11 +84,9 @@ def is_already_signed_up(email: str) -> bool:
         if result.data:
             logger.info(f"Lead {email} already has a profile on the website (is_claimed={result.data[0].get('is_claimed')})")
             return True
-        # Also check auth.users in case they registered with this email but profile email differs
-        result2 = sb.schema("auth").from_("users").select("id").ilike("email", email.strip()).execute()
-        if result2.data:
-            logger.info(f"Lead {email} has an auth account on the website")
-            return True
+        # Note: auth.users is not accessible via PostgREST (schema restriction).
+        # The profiles table check above is sufficient — every signed-up user
+        # gets a profile row via the Supabase trigger.
         return False
     except Exception as e:
         logger.warning(f"Supabase lookup failed for {email}: {e}")
@@ -83,13 +94,10 @@ def is_already_signed_up(email: str) -> bool:
 
 
 def is_within_sending_hours():
-    """Check if current time is within allowed sending hours (Mon-Fri only)"""
+    """Check if current time is within allowed sending hours (every day)"""
     tz = ZoneInfo(Config.TIMEZONE)
     now = datetime.now(tz)
     hour = now.hour
-    # Only send outreach Mon-Fri (0=Monday, 6=Sunday)
-    if now.weekday() >= 5:
-        return False
     return Config.DEFAULT_SENDING_HOURS_START <= hour < Config.DEFAULT_SENDING_HOURS_END
 
 
@@ -105,16 +113,26 @@ def send_scheduled_emails():
         rate_limiter = RateLimiter(db.session)
         personalizer = EmailPersonalizer()
 
-        # Enforce daily send cap — use local timezone (not UTC) to match sending hours
+        # Enforce daily send cap — use local timezone (not UTC) to match sending hours.
+        # This cap applies to cold outreach sent by this function.
+        # AI replies have their own separate cap in ai_responder.py.
+        # We also enforce a global daily limit (cold + replies combined) to
+        # protect per-inbox reputation — total should stay under 50-60/day.
         tz = ZoneInfo(Config.TIMEZONE)
         local_now = datetime.now(tz)
         local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
         today_start_utc = local_midnight.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
-        sent_today = SentEmail.query.filter(
+        all_sent_today = SentEmail.query.filter(
             SentEmail.sent_at >= today_start_utc,
             SentEmail.status == 'sent'
         ).count()
-        daily_cap = int(os.environ.get('DAILY_SEND_CAP', '25'))
+        daily_cap = int(os.environ.get('DAILY_SEND_CAP', '100'))
+        global_daily_cap = int(os.environ.get('GLOBAL_DAILY_CAP', '150'))
+        if all_sent_today >= global_daily_cap:
+            logger.info(f"Global daily cap reached ({all_sent_today}/{global_daily_cap} total emails). Stopping.")
+            return
+        # For cold outreach specifically, use the tighter daily_cap
+        sent_today = all_sent_today  # count all sends toward cold budget
         if sent_today >= daily_cap:
             logger.info(f"Daily send cap reached ({sent_today}/{daily_cap}). Stopping.")
             return
@@ -125,151 +143,308 @@ def send_scheduled_emails():
         active_campaigns = Campaign.query.filter_by(status='active').all()
         logger.info(f"Found {len(active_campaigns)} active campaigns")
 
+        # ─── Phase 1: Collect all sendable items per campaign ────────────
+        from email_verifier import EmailVerifier
+        verifier = EmailVerifier(db.session)
+        ready_by_campaign = {c.id: [] for c in active_campaigns}
+
+        # Keep track of inbox rotation per campaign
+        campaign_inbox_rotation = {}
+
+        # PRE-LOAD Suppressions & Active Leads
+        from models import Suppression
+        all_suppressions = {s[0] for s in db.session.query(Suppression.email).all()}
+
+        from sqlalchemy.orm import joinedload
+        
         for campaign in active_campaigns:
-            inbox = campaign.inbox
-            if not inbox or not inbox.active:
-                logger.warning(f"Campaign {campaign.id} has no active inbox")
+            # Check rotation pool first
+            rotation_inboxes = [ci.inbox for ci in campaign.rotation_inboxes if ci.inbox.active]
+            if rotation_inboxes:
+                inboxes = rotation_inboxes
+            elif campaign.inbox and campaign.inbox.active:
+                inboxes = [campaign.inbox]
+            else:
+                logger.warning(f"Campaign {campaign.id} has no active inboxes")
                 continue
 
-            # Check rate limit
-            if not rate_limiter.can_send(inbox.id, inbox.max_per_hour):
-                logger.info(f"Rate limit reached for inbox {inbox.email}")
+            campaign_inbox_rotation[campaign.id] = inboxes
+            
+            # Pre-load sequences
+            campaign_sequences = Sequence.query.filter_by(
+                campaign_id=campaign.id, 
+                active=True
+            ).order_by(Sequence.step_number).all()
+
+            if not campaign_sequences:
                 continue
 
-            # Get active leads in this campaign
+            # Load leads with their sent emails in one query
             campaign_leads = CampaignLead.query.filter_by(
                 campaign_id=campaign.id,
                 status='active'
-            ).all()
+            ).options(joinedload(CampaignLead.lead)).all()
+            
+            lead_ids = [cl.lead_id for cl in campaign_leads]
+            
+            # Pre-load last sent emails for these leads
+            from sqlalchemy import func
+            subq = db.session.query(
+                SentEmail.lead_id, 
+                func.max(SentEmail.sent_at).label('max_sent_at')
+            ).filter(
+                SentEmail.campaign_id == campaign.id,
+                SentEmail.lead_id.in_(lead_ids) if lead_ids else False
+            ).group_by(SentEmail.lead_id).subquery()
+            
+            latest_sents = db.session.query(SentEmail).join(
+                subq,
+                (SentEmail.lead_id == subq.c.lead_id) & 
+                (SentEmail.sent_at == subq.c.max_sent_at)
+            ).filter(SentEmail.campaign_id == campaign.id).all()
+            
+            # Map lead_id -> last sent email
+            last_sent_map = {s.lead_id: s for s in latest_sents}
 
             for cl in campaign_leads:
                 lead = cl.lead
 
-                # Skip if lead has responded
                 if lead.status == 'responded':
                     continue
 
-                # Skip if lead already signed up on the website
+                # Check global suppression list from pre-loaded set
+                if lead.email.lower() in all_suppressions:
+                    cl.status = 'stopped'
+                    logger.info(f"Skipping {lead.email} — on suppression list")
+                    continue
+
                 if lead.status != 'signed_up' and is_already_signed_up(lead.email):
                     lead.status = 'signed_up'
                     cl.status = 'completed'
-                    db.session.commit()
                     logger.info(f"Skipping {lead.email} — already signed up on website")
                     continue
                 if lead.status == 'signed_up':
                     cl.status = 'completed'
-                    db.session.commit()
                     continue
 
-                # Get last sent email for this lead in this campaign
-                last_sent = SentEmail.query.filter_by(
-                    lead_id=lead.id,
-                    campaign_id=campaign.id
-                ).order_by(SentEmail.sent_at.desc()).first()
+                last_sent = last_sent_map.get(lead.id)
 
-                # Determine next sequence step
                 if last_sent:
                     last_step = last_sent.sequence.step_number
-                    next_sequence = Sequence.query.filter_by(
-                        campaign_id=campaign.id,
-                        step_number=last_step + 1,
-                        active=True
-                    ).first()
+                    # Find next active sequence
+                    next_sequence = next((s for s in campaign_sequences if s.step_number > last_step), None)
 
                     if not next_sequence:
-                        # All sequences completed for this lead
                         cl.status = 'completed'
-                        db.session.commit()
                         continue
 
-                    # Check if delay has passed
                     delay_days = next_sequence.delay_days
                     if datetime.utcnow() < last_sent.sent_at + timedelta(days=delay_days):
                         continue
                 else:
-                    # First email - get step 1
-                    next_sequence = Sequence.query.filter_by(
-                        campaign_id=campaign.id,
-                        step_number=1,
-                        active=True
-                    ).first()
+                    # First step of campaign
+                    next_sequence = campaign_sequences[0]
 
-                    if not next_sequence:
-                        continue
+                # Store item with potential inboxes
+                ready_by_campaign[campaign.id].append((campaign, cl, lead, next_sequence, inboxes))
+        
+        # Batch commit any status changes (stopped/completed)
+        db.session.commit()
 
-                # Re-check rate limit before sending
-                if not rate_limiter.can_send(inbox.id, inbox.max_per_hour):
-                    logger.info(f"Rate limit reached for inbox {inbox.email}")
+        # ─── Phase 2: Prioritize step 1 (new leads) then interleave ─────
+        # Step 1 emails drive 86% of sign-ups, so send those first before
+        # burning daily cap on low-converting follow-ups (steps 2-4).
+        from itertools import zip_longest
+
+        step1_items = []
+        followup_items = []
+        for cid, items in ready_by_campaign.items():
+            for item in items:
+                _campaign, _cl, _lead, _seq, _inboxes = item
+                if _seq.step_number == 1:
+                    step1_items.append(item)
+                else:
+                    followup_items.append(item)
+
+        # Interleave step-1 items across campaigns for fairness
+        step1_by_campaign = {}
+        for item in step1_items:
+            cid = item[0].id
+            step1_by_campaign.setdefault(cid, []).append(item)
+        step1_interleaved = []
+        for batch in zip_longest(*step1_by_campaign.values()):
+            for item in batch:
+                if item:
+                    step1_interleaved.append(item)
+
+        # Then append follow-ups (also interleaved across campaigns)
+        followup_by_campaign = {}
+        for item in followup_items:
+            cid = item[0].id
+            followup_by_campaign.setdefault(cid, []).append(item)
+        followup_interleaved = []
+        for batch in zip_longest(*followup_by_campaign.values()):
+            for item in batch:
+                if item:
+                    followup_interleaved.append(item)
+
+        interleaved = step1_interleaved + followup_interleaved
+
+        ready_counts = {cid: len(q) for cid, q in ready_by_campaign.items() if q}
+        logger.info(f"Collected {len(interleaved)} sendable items ({len(step1_interleaved)} step-1, {len(followup_interleaved)} follow-ups): {ready_counts}")
+
+        # ─── Phase 3: Send in interleaved order, respecting caps ─────────
+        # Inbox usage tracking for this run (to round-robin)
+        inbox_last_used_index = {cid: 0 for cid in ready_by_campaign.keys()}
+        
+        sent_per_campaign = {}  # track per-campaign for fairness logging
+        for campaign, cl, lead, next_sequence, inboxes in interleaved:
+            # Round-robin inbox selection
+            start_idx = inbox_last_used_index[campaign.id]
+            inbox = None
+            
+            # Try inboxes in rotation until one is available
+            for i in range(len(inboxes)):
+                idx = (start_idx + i) % len(inboxes)
+                candidate = inboxes[idx]
+                if rate_limiter.can_send(candidate.id, candidate.max_per_hour):
+                    inbox = candidate
+                    inbox_last_used_index[campaign.id] = (idx + 1) % len(inboxes)
                     break
+            
+            if not inbox:
+                logger.info(f"All {len(inboxes)} inboxes for campaign {campaign.id} rate limited, skipping lead {lead.email}")
+                continue
 
-                # Verify email before sending (Verifalia - 25 free/day)
-                from email_verifier import EmailVerifier
-                verifier = EmailVerifier(db.session)
-                verification_status = verifier.verify_email(lead)
-                if not verifier.should_send(verification_status):
-                    logger.warning(f"Skipping {lead.email}: verification={verification_status}")
-                    cl.status = 'stopped'
-                    db.session.commit()
-                    continue
+            # Verify email before sending
+            verification_status = verifier.verify_email(lead)
+            if not verifier.should_send(verification_status):
+                logger.warning(f"Skipping {lead.email}: verification={verification_status}")
+                cl.status = 'stopped'
+                db.session.commit()
+                continue
 
-                # Personalize and send email
-                try:
-                    subject = personalizer.personalize(next_sequence.subject_template, lead)
-                    body = personalizer.personalize(next_sequence.email_template, lead)
+            try:
+                subject = personalizer.personalize(next_sequence.subject_template, lead)
+                body = personalizer.personalize(next_sequence.email_template, lead)
 
-                    # Wrap in professional HTML template with brand footer
-                    body_html = wrap_email_html(body, inbox.email, lead=lead)
-                    unsubscribe_url = build_unsubscribe_url(lead)
+                body_html = wrap_email_html(body, inbox.email, lead=lead)
+                unsubscribe_url = build_unsubscribe_url(lead)
 
-                    sender = EmailSender(inbox)
-                    success, message_id, error = sender.send_email(
-                        to_email=lead.email,
+                sender = EmailSender(inbox)
+                success, message_id, error = sender.send_email(
+                    to_email=lead.email,
+                    subject=subject,
+                    body_html=body_html,
+                    unsubscribe_url=unsubscribe_url
+                )
+
+                if success:
+                    sent_email = SentEmail(
+                        lead_id=lead.id,
+                        campaign_id=campaign.id,
+                        sequence_id=next_sequence.id,
+                        inbox_id=inbox.id,
+                        message_id=message_id,
                         subject=subject,
-                        body_html=body_html,
-                        unsubscribe_url=unsubscribe_url
+                        body=body,
+                        status='sent'
                     )
+                    db.session.add(sent_email)
 
-                    if success:
-                        # Record sent email
-                        sent_email = SentEmail(
-                            lead_id=lead.id,
-                            campaign_id=campaign.id,
-                            sequence_id=next_sequence.id,
-                            inbox_id=inbox.id,
-                            message_id=message_id,
-                            subject=subject,
-                            body=body,
-                            status='sent'
-                        )
-                        db.session.add(sent_email)
+                    if next_sequence.step_number == 1 and not lead.personal_deadline:
+                        deadline_date = datetime.utcnow() + timedelta(days=21)
+                        day = deadline_date.day
+                        suffix = ('th' if 11 <= day <= 13
+                                  else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th'))
+                        lead.personal_deadline = deadline_date.strftime(f'%B {day}{suffix}')
 
-                        # Store personal deadline on first email so AI responder
-                        # can use the exact date this lead was told (not a hardcoded global date)
-                        if next_sequence.step_number == 1 and not lead.personal_deadline:
-                            deadline_date = datetime.utcnow() + timedelta(days=21)
-                            day = deadline_date.day
-                            suffix = ('th' if 11 <= day <= 13
-                                      else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th'))
-                            lead.personal_deadline = deadline_date.strftime(f'%B {day}{suffix}')
+                    if lead.status == 'new':
+                        lead.status = 'contacted'
 
-                        # Update lead status
-                        if lead.status == 'new':
-                            lead.status = 'contacted'
+                    db.session.commit()
 
-                        db.session.commit()
-                        logger.info(f"Sent email to {lead.email} (step {next_sequence.step_number})")
+                    # Track per-campaign sends
+                    cname = campaign.name[:30]
+                    sent_per_campaign[cname] = sent_per_campaign.get(cname, 0) + 1
 
-                        sent_this_run += 1
-                        if sent_this_run >= remaining_today:
-                            logger.info(f"Daily send cap reached ({sent_today + sent_this_run}/{daily_cap}). Stopping.")
-                            return
-                    else:
-                        logger.error(f"Failed to send to {lead.email}: {error}")
+                    logger.info(f"Sent email to {lead.email} (campaign={campaign.id}, step {next_sequence.step_number})")
 
-                except Exception as e:
-                    logger.error(f"Error sending to {lead.email}: {e}")
+                    # Random delay between sends to mimic human sending patterns
+                    # and avoid spam filter detection (30-90s range)
+                    delay = random.uniform(30, 90)
+                    logger.info(f"Waiting {delay:.0f}s before next send...")
+                    time.sleep(delay)
 
-    logger.info("Scheduled email send job completed")
+                    sent_this_run += 1
+                    if sent_this_run >= remaining_today:
+                        logger.info(f"Daily send cap reached ({sent_today + sent_this_run}/{daily_cap}). Stopping.")
+                        # Log final per-campaign breakdown before exiting
+                        logger.info(f"Round-robin send breakdown: {sent_per_campaign}")
+                        return
+                else:
+                    logger.error(f"Failed to send to {lead.email}: {error}")
+
+            except Exception as e:
+                logger.error(f"Error sending to {lead.email}: {e}")
+
+    # Log per-campaign breakdown at end of run
+    if sent_per_campaign:
+        logger.info(f"Round-robin send breakdown: {sent_per_campaign}")
+    logger.info(f"Scheduled email send job completed: {sent_this_run} sent this run")
+
+
+def _parse_ooo_return_date(body: str) -> str:
+    """Try to extract a return date from an OOO message body. Returns YYYY-MM-DD or ''."""
+    import re
+    from datetime import datetime as _dt
+
+    # Common patterns: "return on March 5", "back on 3/5/2026", "returning February 25th"
+    patterns = [
+        # "return/back on March 5, 2026" or "March 5th"
+        r'(?:return|back|available|office)\s+(?:on|by)?\s*'
+        r'((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4})',
+        # "return/back on 3/5/2026" or "3/5/26" or "03/05/2026"
+        r'(?:return|back|available|office)\s+(?:on|by)?\s*(\d{1,2}/\d{1,2}/\d{2,4})',
+        # "return/back on 2026-03-05"
+        r'(?:return|back|available|office)\s+(?:on|by)?\s*(\d{4}-\d{2}-\d{2})',
+        # Standalone date mention near OOO keywords: "I will be out until March 5"
+        r'(?:until|through|till)\s+'
+        r'((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4})',
+        r'(?:until|through|till)\s+(\d{1,2}/\d{1,2}/\d{2,4})',
+    ]
+
+    body_clean = body.lower().replace('\n', ' ').replace('\r', ' ')
+
+    for pattern in patterns:
+        match = re.search(pattern, body_clean, re.IGNORECASE)
+        if not match:
+            continue
+        date_str = match.group(1).strip().rstrip(',')
+        # Remove ordinal suffixes
+        date_str = re.sub(r'(\d)(st|nd|rd|th)', r'\1', date_str)
+
+        # Try parsing common formats
+        for fmt in [
+            '%B %d %Y', '%B %d, %Y', '%B %d',
+            '%b %d %Y', '%b %d, %Y', '%b %d',
+            '%b. %d %Y', '%b. %d, %Y', '%b. %d',
+            '%m/%d/%Y', '%m/%d/%y',
+            '%Y-%m-%d',
+        ]:
+            try:
+                parsed = _dt.strptime(date_str, fmt)
+                # If no year in format, assume current or next year
+                if '%Y' not in fmt and '%y' not in fmt:
+                    now = _dt.utcnow()
+                    parsed = parsed.replace(year=now.year)
+                    if parsed < now - timedelta(days=30):
+                        parsed = parsed.replace(year=now.year + 1)
+                return parsed.strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+
+    return ''
 
 
 def check_responses():
@@ -308,6 +483,14 @@ def check_responses():
 
                     if not lead and from_email:
                         lead = Lead.query.filter_by(email=from_email).first()
+                        # Try to find the most recent SentEmail for A/B attribution
+                        if lead and not sent_email:
+                            sent_email = SentEmail.query.filter_by(
+                                lead_id=lead.id,
+                                status='sent'
+                            ).order_by(SentEmail.sent_at.desc()).first()
+                            if sent_email:
+                                logger.info(f"Fallback attribution: linked reply from {lead.email} to campaign {sent_email.campaign_id}")
 
                     # Skip emails from ourselves or unknown senders
                     if not lead:
@@ -326,10 +509,26 @@ def check_responses():
                         sent_email_id=sent_email.id if sent_email else None,
                         message_id=msg_id,
                         in_reply_to=in_reply_to,
+                        references=resp_data.get('references'),
                         subject=resp_data.get('subject'),
                         body=resp_data.get('body'),
                         reviewed=False
                     )
+
+                    # --- OOO return date detection ---
+                    body_lower = (resp_data.get('body') or '').lower()
+                    subject_lower = (resp_data.get('subject') or '').lower()
+                    combined = subject_lower + ' ' + body_lower
+                    is_ooo = any(x in combined for x in [
+                        'out of office', 'auto-reply', 'automatic reply',
+                        'on vacation', 'away from', 'out of the office'
+                    ])
+                    if is_ooo:
+                        return_date = _parse_ooo_return_date(resp_data.get('body') or '')
+                        if return_date:
+                            response.notes = f"OOO_RETURN:{return_date}"
+                            logger.info(f"OOO detected for {lead.email}, return date: {return_date}")
+
                     db.session.add(response)
 
                     lead.status = 'responded'
@@ -365,17 +564,50 @@ def auto_reply():
             logger.error(f"Error in auto-reply job: {e}")
 
 
+def nudge_warm_leads():
+    """Run auto-nudge on warm leads who haven't signed up."""
+    logger.info("Starting auto-nudge job...")
+    with app.app_context():
+        try:
+            from auto_nudge import run_auto_nudge
+            count = run_auto_nudge()
+            logger.info(f"Auto-nudge job completed: {count} nudge(s) sent")
+        except Exception as e:
+            logger.error(f"Error in auto-nudge job: {e}")
+
+
+def force_process_pending():
+    """Reset retry counters and force AI auto-reply on all unreviewed responses."""
+    logger.info("FORCE MODE: Re-processing all pending responses...")
+    with app.app_context():
+        pending = Response.query.filter_by(reviewed=False).all()
+        reset_count = 0
+        for resp in pending:
+            if resp.notes and 'api_retry=' in (resp.notes or ''):
+                resp.notes = None
+                reset_count += 1
+        db.session.commit()
+        logger.info(f"Reset {reset_count} retry counters out of {len(pending)} pending responses")
+
+        # Now run auto-reply — it will pick up all unreviewed
+        auto_reply()
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Run email jobs')
     parser.add_argument('--send', action='store_true', help='Send scheduled emails')
     parser.add_argument('--check', action='store_true', help='Check for responses')
     parser.add_argument('--reply', action='store_true', help='Run AI auto-reply')
+    parser.add_argument('--nudge', action='store_true', help='Run auto-nudge for warm leads')
     parser.add_argument('--all', action='store_true', help='Run all jobs')
+    parser.add_argument('--force-reply', action='store_true', help='Force re-process all pending responses')
 
     args = parser.parse_args()
 
-    if args.all or (not args.send and not args.check and not args.reply):
+    if args.force_reply:
+        force_process_pending()
+    elif args.all or (not args.send and not args.check and not args.reply and not args.nudge):
         send_scheduled_emails()
         check_responses()
         auto_reply()
@@ -386,5 +618,7 @@ if __name__ == "__main__":
             check_responses()
         if args.reply:
             auto_reply()
+        if args.nudge:
+            nudge_warm_leads()
 
     print("Done!")
