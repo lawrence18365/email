@@ -1,7 +1,7 @@
 import requests, os
 from dotenv import load_dotenv
 load_dotenv()
-url = os.getenv('TURSO_DATABASE_URL').replace('libsql://', 'https://') + '/v2/pipeline'
+url = os.getenv('TURSO_DATABASE_URL', '').replace('libsql://', 'https://') + '/v2/pipeline'
 token = os.getenv('TURSO_AUTH_TOKEN')
 h = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
 

@@ -57,8 +57,7 @@ class BounceDetector:
         'mail delivery system',
         'bounce',
         'bounces',
-        'noreply',
-        'no-reply'
+        # Note: noreply/no-reply removed — too broad, catches legitimate auto-replies
     ]
     
     # Hard bounce patterns (permanent failures)
@@ -219,8 +218,8 @@ class BounceProcessor:
             mail = imaplib.IMAP4_SSL(inbox.imap_host, inbox.imap_port, timeout=30)
             mail.login(inbox.username, inbox.password)
             
-            # Try common bounce/spam folders
-            folders_to_check = ['Spam', 'Junk', 'Quarantine', 'Bounces', 'INBOX.Spam']
+            # Check INBOX (many bounces land here) plus spam/junk folders
+            folders_to_check = ['INBOX', 'Spam', 'Junk', '[Gmail]/Spam', 'Quarantine', 'Bounces', 'INBOX.Spam', 'INBOX.Junk']
             
             for folder in folders_to_check:
                 try:
@@ -329,7 +328,7 @@ class BounceProcessor:
             # Update lead status
             if bounce.bounce_type == BounceType.HARD:
                 lead.status = 'bounced'
-                lead.notes = f"Hard bounce: {bounce.reason}"
+                lead.email_verification_status = f"Hard bounce: {bounce.reason}"
                 
                 # Stop all campaigns for this lead
                 campaign_leads = CampaignLead.query.filter_by(
@@ -345,7 +344,7 @@ class BounceProcessor:
                 
             elif bounce.bounce_type == BounceType.COMPLAINT:
                 lead.status = 'complained'
-                lead.notes = f"Spam complaint: {bounce.reason}"
+                lead.email_verification_status = f"Spam complaint: {bounce.reason}"
                 
                 # Also stop campaigns
                 campaign_leads = CampaignLead.query.filter_by(
@@ -360,7 +359,7 @@ class BounceProcessor:
                 
             elif bounce.bounce_type == BounceType.SOFT:
                 # Don't change status yet, but track the bounce
-                lead.notes = f"Soft bounce ({datetime.utcnow().strftime('%Y-%m-%d')}): {bounce.reason}"
+                lead.email_verification_status = f"Soft bounce ({datetime.utcnow().strftime('%Y-%m-%d')}): {bounce.reason}"
                 logger.info(f"Recorded soft bounce for: {bounce.email}")
             
             self.db.session.commit()
@@ -404,7 +403,7 @@ class BounceProcessor:
                 {
                     'email': b.email,
                     'status': b.status,
-                    'reason': b.notes,
+                    'reason': b.status,
                     'date': b.updated_at.isoformat() if b.updated_at else None
                 }
                 for b in bounced[:50]  # Limit to 50 most recent
@@ -457,7 +456,7 @@ class BounceCleaner:
                 writer.writerow([
                     lead.email,
                     lead.status,
-                    lead.notes or '',
+                    lead.email_verification_status or '',
                     lead.first_name or '',
                     lead.last_name or '',
                     lead.updated_at.isoformat() if lead.updated_at else ''
@@ -506,11 +505,12 @@ def check_and_process_bounces(app, db):
         for inbox in inboxes:
             logger.info(f"Checking bounces for {inbox.email}...")
             bounces = processor.process_bounce_folder(inbox)
-            
+
             for bounce in bounces:
+                logger.info(f"Bounce detected: {bounce.email} ({bounce.bounce_type.value}) - {bounce.reason[:100]}")
                 processor.update_lead_status(bounce)
                 total_bounces.append(bounce)
-            
+
             logger.info(f"Found {len(bounces)} bounces in {inbox.email}")
         
         # Generate report
@@ -523,27 +523,12 @@ def check_and_process_bounces(app, db):
 
 
 if __name__ == '__main__':
-    # Test the detector
-    detector = BounceDetector()
-    
-    # Test detection
-    test_body = """
-    Delivery Status Notification (Failure)
-    
-    The recipient's email address was not found.
-    
-    Final-Recipient: rfc822; nonexistent@example.com
-    Action: failed
-    Status: 5.1.1
-    Diagnostic-Code: smtp; 550 5.1.1 User unknown
-    """
-    
-    print("Testing bounce detection...")
-    print(f"Is bounce: {detector.is_bounce_email('mailer-daemon@googlemail.com')}")
-    
-    bounce_type, reason = detector.detect_bounce_type(test_body)
-    print(f"Bounce type: {bounce_type.value}")
-    print(f"Reason: {reason}")
-    
-    bounced_email = detector.extract_bounced_email(test_body)
-    print(f"Bounced email: {bounced_email}")
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from app import app
+    from models import db
+
+    result = check_and_process_bounces(app, db)
+    logger.info(f"Bounce check complete: {result['bounces_found']} bounces found")
+    report = result['report']
+    logger.info(f"30-day report: {report['hard_bounces']} hard, {report['complaints']} complaints, {report['bounce_rate_percent']}% rate")

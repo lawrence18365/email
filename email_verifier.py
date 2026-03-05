@@ -46,7 +46,15 @@ class EmailVerifier:
 
         # Check daily quota
         if not self._has_quota_remaining():
-            logger.info("Verifalia daily quota exhausted (25/day), skipping verification")
+            from models import Lead
+            unverified = Lead.query.filter(
+                Lead.email_verified == False,
+                Lead.email_verification_status.is_(None)
+            ).count()
+            logger.warning(
+                f"Verifalia daily quota exhausted (25/day). "
+                f"{unverified} leads still unverified. Email will send unverified."
+            )
             return 'Skipped'
 
         # Call Verifalia API
