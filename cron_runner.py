@@ -324,6 +324,19 @@ def send_scheduled_emails():
                 db.session.commit()
                 continue
 
+            # ── Belt-and-suspenders duplicate guard ──────────────────
+            # Prevents double-sends if concurrent cron runs overlap or
+            # the in-memory last_sent_map becomes stale.
+            already_sent = SentEmail.query.filter_by(
+                lead_id=lead.id,
+                campaign_id=campaign.id,
+                sequence_id=next_sequence.id,
+                status='sent'
+            ).first()
+            if already_sent:
+                logger.warning(f"DEDUP: {lead.email} already received sequence {next_sequence.step_number} for campaign {campaign.id}. Skipping.")
+                continue
+
             try:
                 subject = personalizer.personalize(next_sequence.subject_template, lead)
                 body = personalizer.personalize(next_sequence.email_template, lead)

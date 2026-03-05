@@ -51,7 +51,7 @@ jobs:
           SENDING_HOURS_END: "17"
           DAILY_SEND_CAP: "50"
         run: |
-          python cron_runner.py --all
+          python cron_runner.py --send --check --bounce
 
       - name: AI auto-reply to new responses
         env:
