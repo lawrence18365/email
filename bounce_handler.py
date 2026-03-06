@@ -203,7 +203,9 @@ class BounceProcessor:
     """Processes detected bounces and updates database"""
     
     def __init__(self, db_session, detector: Optional[BounceDetector] = None):
-        self.db = db_session
+        # Accept either the Flask-SQLAlchemy db object or a Session/scoped_session.
+        # GitHub Actions passes db.session here, so normalize once and use it directly.
+        self.session = getattr(db_session, 'session', db_session)
         self.detector = detector or BounceDetector()
     
     def process_bounce_folder(self, inbox) -> List[BounceRecord]:
@@ -362,12 +364,12 @@ class BounceProcessor:
                 lead.email_verification_status = f"Soft bounce ({datetime.utcnow().strftime('%Y-%m-%d')}): {bounce.reason}"
                 logger.info(f"Recorded soft bounce for: {bounce.email}")
             
-            self.db.session.commit()
+            self.session.commit()
             return True
             
         except Exception as e:
             logger.error(f"Error updating lead status for bounce: {e}")
-            self.db.session.rollback()
+            self.session.rollback()
             return False
     
     def generate_bounce_report(self, days: int = 30) -> Dict:
@@ -426,7 +428,8 @@ class BounceCleaner:
     """Handles cleaning/removing bounced emails after review period"""
     
     def __init__(self, db_session):
-        self.db = db_session
+        # Accept either the Flask-SQLAlchemy db object or a Session/scoped_session.
+        self.session = getattr(db_session, 'session', db_session)
     
     def get_bounced_for_review(self, min_age_days: int = 30) -> List:
         """Get bounced leads that are ready for review/deletion"""
@@ -482,10 +485,10 @@ class BounceCleaner:
         
         count = 0
         for lead in to_delete:
-            self.db.session.delete(lead)
+            self.session.delete(lead)
             count += 1
         
-        self.db.session.commit()
+        self.session.commit()
         logger.info(f"Deleted {count} hard bounced leads")
         return count
 
