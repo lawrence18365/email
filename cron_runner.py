@@ -94,10 +94,20 @@ def is_already_signed_up(email: str) -> bool:
 
 
 def is_within_sending_hours():
-    """Check if current time is within allowed sending hours (every day)"""
+    """Check if current time is within allowed sending hours (weekdays only).
+
+    Weekends are skipped for sends — responses/bounces still process.
+    Best send days are Tue-Thu per deliverability research.
+    """
     tz = ZoneInfo(Config.TIMEZONE)
     now = datetime.now(tz)
     hour = now.hour
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+
+    # Skip weekends for cold outreach sends
+    if weekday >= 5:  # Saturday=5, Sunday=6
+        return False
+
     return Config.DEFAULT_SENDING_HOURS_START <= hour < Config.DEFAULT_SENDING_HOURS_END
 
 
@@ -314,6 +324,16 @@ def send_scheduled_emails():
             
             if not inbox:
                 logger.info(f"All {len(inboxes)} inboxes for campaign {campaign.id} rate limited, skipping lead {lead.email}")
+                continue
+
+            # Quick format check — catch obviously malformed emails before
+            # wasting a Verifalia credit or generating a hard bounce
+            import re as _re
+            if not _re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', lead.email or ''):
+                logger.warning(f"Skipping malformed email: {lead.email}")
+                cl.status = 'stopped'
+                lead.status = 'bounced'
+                db.session.commit()
                 continue
 
             # Verify email before sending

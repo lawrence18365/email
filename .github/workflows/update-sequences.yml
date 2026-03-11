@@ -38,3 +38,10 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
         run: python setup_ab_test.py
+
+      - name: Re-engage completed leads (add step 5)
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: python reengage_completed_leads.py
